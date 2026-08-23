@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import html
+import logging
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from django.conf import settings
+from pydantic import ValidationError
+
+from support.schemas import SupportAnalysis, fallback_analysis
+from support.services.ai.base import AIProvider, AIProviderError
+from support.services.ai.factory import get_ai_provider
+from support.services.decision_engine import (
+    SupportDecision,
+    evaluate_support_decision,
+)
+from support.services.gorgias import GorgiasAPIError, GorgiasClient
+
+logger = logging.getLogger(__name__)
+TAG_RE = re.compile(r"<[^>]+>")
+
+
+@dataclass(frozen=True)
+class ProcessingResult:
+    ticket_id: str
+    analysis: SupportAnalysis
+    decision: SupportDecision
+    internal_note: str
+
+
+class SupportTicketProcessor:
+    def __init__(
+        self,
+        gorgias_client: GorgiasClient | None = None,
+        ai_provider: AIProvider | None = None,
+    ) -> None:
+        self.gorgias_client = gorgias_client or GorgiasClient.from_settings()
+        self.ai_provider = ai_provider
+
+    def process(
+        self,
+        ticket_id: int | str,
+        event_payload: Mapping[str, Any] | None = None,
+    ) -> ProcessingResult:
+        ticket_id_text = str(ticket_id)
+        ticket = self.gorgias_client.get_ticket(ticket_id_text)
+        customer = self._fetch_customer(ticket)
+        latest_message = extract_latest_customer_message(ticket, event_payload or {})
+
+        ai_context = {
+            "ticket": ticket,
+            "customer": customer,
+            "latest_customer_message": latest_message,
+        }
+        analysis = self._safe_analyze(ai_context)
+        decision = evaluate_support_decision(
+            analysis,
+            {"ticket": ticket, "customer": customer},
+            latest_message,
+        )
+        internal_note = build_internal_note(analysis, decision)
+
+        logger.info(
+            "Applying support decision for Gorgias ticket %s: priority=%s action=%s",
+            ticket_id_text,
+            decision.priority,
+            decision.recommended_action,
+        )
+        self.gorgias_client.update_ticket_priority(ticket_id_text, decision.priority)
+        self.gorgias_client.add_tags_to_ticket(ticket_id_text, decision.tags)
+        self.gorgias_client.create_internal_note(ticket_id_text, internal_note)
+
+        return ProcessingResult(
+            ticket_id=ticket_id_text,
+            analysis=analysis,
+            decision=decision,
+            internal_note=internal_note,
+        )
+
+    def _fetch_customer(self, ticket: Mapping[str, Any]) -> Mapping[str, Any]:
+        embedded_customer = ticket.get("customer")
+        if not isinstance(embedded_customer, Mapping):
+            return {}
+
+        customer_id = embedded_customer.get("id")
+        if not customer_id:
+            return embedded_customer
+
+        try:
+            return self.gorgias_client.get_customer(customer_id)
+        except GorgiasAPIError:
+            logger.warning(
+                "Could not fetch customer context for Gorgias customer id %s.",
+                customer_id,
+            )
+            return embedded_customer
+
+    def _safe_analyze(self, ai_context: Mapping[str, Any]) -> SupportAnalysis:
+        try:
+            provider = self.ai_provider or get_ai_provider()
+        except AIProviderError as exc:
+            logger.warning("AI provider unavailable: %s", exc)
+            return fallback_analysis(str(exc))
+
+        try:
+            return provider.analyze(ai_context)
+        except (AIProviderError, ValidationError) as exc:
+            logger.warning("AI analysis failed validation: %s", exc)
+            return fallback_analysis(str(exc))
+        except Exception as exc:
+            logger.warning("AI analysis failed unexpectedly: %s", exc)
+            return fallback_analysis("AI provider failed unexpectedly.")
+
+
+def build_internal_note(analysis: SupportAnalysis, decision: SupportDecision) -> str:
+    suggested_reply = _safe_suggested_reply(analysis, decision)
+    action_label = {
+        "auto_resolve": "Human review required before any customer-facing action.",
+        "agent_review": "Human review required.",
+        "escalate": "Escalate to a human agent.",
+    }.get(decision.recommended_action, "Human review required.")
+
+    return (
+        "AI SUPPORT ANALYSIS\n\n"
+        f"Intent: {analysis.intent}\n"
+        f"Sentiment: {analysis.sentiment}\n"
+        f"Urgency: {analysis.urgency}\n"
+        f"Risk: {analysis.risk}\n"
+        f"Confidence: {analysis.confidence:.2f}\n\n"
+        "Summary:\n"
+        f"{analysis.summary}\n\n"
+        "Recommended action:\n"
+        f"{action_label}\n\n"
+        "Suggested reply:\n"
+        f"{suggested_reply}\n\n"
+        "Decision:\n"
+        f"{decision.decision_reason}\n"
+        "No customer-facing message was sent by this automation.\n\n"
+        "Generated by demo AI automation."
+    )
+
+
+def extract_latest_customer_message(
+    ticket: Mapping[str, Any],
+    event_payload: Mapping[str, Any],
+) -> str:
+    messages = _extract_messages(ticket)
+    event_message = _extract_event_message(event_payload)
+    if event_message:
+        messages.append(event_message)
+
+    for message in reversed(messages):
+        if _is_agent_or_internal_message(message):
+            continue
+        body = _extract_message_body(message)
+        if body:
+            return body
+    return ""
+
+
+def _extract_messages(ticket: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    raw_messages = ticket.get("messages", [])
+    if isinstance(raw_messages, Mapping):
+        for key in ("data", "results", "messages"):
+            nested = raw_messages.get(key)
+            if isinstance(nested, list):
+                raw_messages = nested
+                break
+
+    if not isinstance(raw_messages, list):
+        return []
+    return [message for message in raw_messages if isinstance(message, Mapping)]
+
+
+def _extract_event_message(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    for key in ("message", "comment", "data", "object"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            if any(body_key in value for body_key in ("body_text", "body_html", "body", "text")):
+                return value
+            nested = _extract_event_message(value)
+            if nested:
+                return nested
+    return None
+
+
+def _extract_message_body(message: Mapping[str, Any]) -> str:
+    for key in ("body_text", "stripped_text", "text", "body", "body_html", "message"):
+        value = message.get(key)
+        if isinstance(value, str):
+            clean = TAG_RE.sub(" ", value)
+            clean = html.unescape(clean)
+            clean = " ".join(clean.split())
+            if clean:
+                return clean
+    return ""
+
+
+def _is_agent_or_internal_message(message: Mapping[str, Any]) -> bool:
+    if message.get("public") is False:
+        return True
+    if message.get("from_agent") is True or message.get("from_self") is True:
+        return True
+    if _extract_message_body(message).lower().find("generated by demo ai automation") != -1:
+        return True
+
+    sender = message.get("sender") or message.get("author") or {}
+    if isinstance(sender, Mapping):
+        sender_type = str(sender.get("type", "")).lower()
+        if sender_type in {"agent", "admin", "integration", "system"}:
+            return True
+        configured_email = settings.GORGIAS_INTEGRATION_EMAIL.strip().lower()
+        if configured_email and str(sender.get("email", "")).strip().lower() == configured_email:
+            return True
+        configured_user_id = settings.GORGIAS_INTEGRATION_USER_ID.strip()
+        if configured_user_id and str(sender.get("id", "")).strip() == configured_user_id:
+            return True
+    return False
+
+
+def _safe_suggested_reply(analysis: SupportAnalysis, decision: SupportDecision) -> str:
+    if "AI_SAFETY" in decision.tags:
+        return (
+            "Do not send an automated reply. A human agent should review immediately, "
+            "acknowledge the safety concern, and follow the approved escalation process."
+        )
+    if "AI_SHIPPING_DELAY" in decision.tags:
+        return (
+            "Thanks for reaching out. I am checking the fulfillment status for your "
+            "order and will confirm the next step after reviewing the shipment details."
+        )
+    if "AI_PRODUCT_DEFECT" in decision.tags:
+        return (
+            "I am sorry the product is not working as expected. Please share the order "
+            "number, a brief photo or video of the issue, and whether the basic charging "
+            "and reset steps have already been tried so our team can review the warranty case."
+        )
+    return analysis.suggested_reply.strip()
