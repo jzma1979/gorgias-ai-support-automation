@@ -5,6 +5,7 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from django.conf import settings
@@ -21,6 +22,7 @@ from support.services.gorgias import GorgiasAPIError, GorgiasClient
 
 logger = logging.getLogger(__name__)
 TAG_RE = re.compile(r"<[^>]+>")
+EVENT_MESSAGE_MARKER = "_event_payload_message"
 
 
 @dataclass(frozen=True)
@@ -151,15 +153,24 @@ def extract_latest_customer_message(
     messages = _extract_messages(ticket)
     event_message = _extract_event_message(event_payload)
     if event_message:
-        messages.append(event_message)
+        messages.append({EVENT_MESSAGE_MARKER: True, **event_message})
 
-    for message in reversed(messages):
+    candidates: list[tuple[Mapping[str, Any], str, int]] = []
+    for index, message in enumerate(messages):
         if _is_agent_or_internal_message(message):
             continue
         body = _extract_message_body(message)
         if body:
-            return body
-    return ""
+            candidates.append((message, body, index))
+
+    if not candidates:
+        return ""
+
+    _, latest_body, _ = max(
+        candidates,
+        key=lambda item: _message_sort_key(item[0], item[2]),
+    )
+    return latest_body
 
 
 def _extract_messages(ticket: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -198,6 +209,51 @@ def _extract_message_body(message: Mapping[str, Any]) -> str:
             if clean:
                 return clean
     return ""
+
+
+def _message_sort_key(message: Mapping[str, Any], index: int) -> tuple[int, float, int]:
+    timestamp = _message_timestamp(message)
+    if message.get(EVENT_MESSAGE_MARKER) is True and timestamp is None:
+        return (2, 0.0, index)
+    if timestamp is not None:
+        return (1, timestamp, index)
+    return (0, 0.0, index)
+
+
+def _message_timestamp(message: Mapping[str, Any]) -> float | None:
+    for key in (
+        "created_datetime",
+        "created_at",
+        "createdAt",
+        "date",
+        "sent_datetime",
+        "timestamp",
+    ):
+        value = message.get(key)
+        timestamp = _parse_timestamp(value)
+        if timestamp is not None:
+            return timestamp
+    return None
+
+
+def _parse_timestamp(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def _is_agent_or_internal_message(message: Mapping[str, Any]) -> bool:

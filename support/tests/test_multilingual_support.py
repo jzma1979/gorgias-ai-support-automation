@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+
 from support.schemas import SupportAnalysis, fallback_analysis
 from support.services.ai.openrouter import OpenRouterProvider
 from support.services.decision_engine import SupportDecision
-from support.services.processor import build_internal_note
+from support.services.processor import build_internal_note, extract_latest_customer_message
 
 
 class FakeResponse:
@@ -45,6 +47,44 @@ def make_decision() -> SupportDecision:
         customer_reply_allowed=False,
         decision_reason="Human review required.",
     )
+
+
+def analysis_content(
+    *,
+    customer_language: str,
+    summary: str,
+    suggested_reply: str,
+    intent: str = "order_status",
+) -> str:
+    return json.dumps(
+        {
+            "customer_language": customer_language,
+            "intent": intent,
+            "sentiment": "neutral",
+            "urgency": "low",
+            "risk": "low",
+            "confidence": 0.86,
+            "summary": summary,
+            "suggested_reply": suggested_reply,
+            "recommended_action": "agent_review",
+            "reasoning_summary": "Language and support intent were classified.",
+        },
+        ensure_ascii=False,
+    )
+
+
+def language_source_section(prompt: str) -> str:
+    return prompt.split("CUSTOMER MESSAGE — LANGUAGE DETECTION SOURCE:", 1)[1].split(
+        "ORDER / BUSINESS CONTEXT — DO NOT USE FOR LANGUAGE DETECTION:",
+        1,
+    )[0]
+
+
+def business_context_section(prompt: str) -> str:
+    return prompt.split(
+        "ORDER / BUSINESS CONTEXT — DO NOT USE FOR LANGUAGE DETECTION:",
+        1,
+    )[1]
 
 
 def test_english_ticket_keeps_summary_and_reply_in_english() -> None:
@@ -141,3 +181,186 @@ def test_fallback_analysis_uses_unknown_language() -> None:
 
     assert analysis.customer_language == "unknown"
     assert analysis.suggested_reply.startswith("Please review")
+
+
+def test_serbian_language_regression_uses_customer_message_not_english_context() -> None:
+    customer_message = (
+        "Zdravo, moja porudžbina još nije stigla. Prošlo je više od nedelju "
+        "dana i počinjem da se nerviram. Možete li da proverite gde je paket?"
+    )
+    provider = make_provider(
+        analysis_content(
+            customer_language="sr",
+            summary="Customer says order #1001 has not arrived after more than a week.",
+            suggested_reply=(
+                "Zdravo, proverićemo porudžbinu #1001, Heatbox i Canpar Courier "
+                "tracking TRACK123 pa ćemo vam se javiti."
+            ),
+        )
+    )
+
+    analysis = provider.analyze(
+        {
+            "latest_customer_message": customer_message,
+            "ticket": {
+                "subject": "Order #1001 tracking information",
+                "order": {
+                    "name": "Order #1001",
+                    "product_name": "Heatbox",
+                    "fulfillment_status": "fulfilled",
+                    "tracking_company": "Canpar Courier",
+                    "tracking_number": "TRACK123",
+                    "tracking_url": "https://track.example/TRACK123",
+                },
+                "messages": [
+                    {
+                        "body_text": "AI SUPPORT ANALYSIS\nSummary in English.",
+                        "public": False,
+                        "sender": {"type": "agent"},
+                    }
+                ],
+            },
+        }
+    )
+    prompt = provider.session.calls[0]["kwargs"]["json"]["messages"][1]["content"]
+
+    assert analysis.customer_language == "sr"
+    assert analysis.summary == "Customer says order #1001 has not arrived after more than a week."
+    assert analysis.suggested_reply.startswith("Zdravo")
+    assert "#1001" in analysis.suggested_reply
+    assert "Heatbox" in analysis.suggested_reply
+    assert "Canpar Courier" in analysis.suggested_reply
+    assert "TRACK123" in analysis.suggested_reply
+    assert customer_message in language_source_section(prompt)
+    assert "Order #1001" in business_context_section(prompt)
+    assert "Heatbox" in business_context_section(prompt)
+    assert "AI SUPPORT ANALYSIS" not in business_context_section(prompt)
+    assert customer_message not in business_context_section(prompt)
+
+
+def test_german_message_with_english_shopify_context_detects_de() -> None:
+    customer_message = "Hallo, meine Bestellung #2002 ist noch nicht angekommen."
+    provider = make_provider(
+        analysis_content(
+            customer_language="de",
+            summary="Customer says order #2002 has not arrived yet.",
+            suggested_reply="Hallo, wir prüfen Bestellung #2002 und melden uns in Kürze.",
+        )
+    )
+
+    analysis = provider.analyze(
+        {
+            "latest_customer_message": customer_message,
+            "ticket": {"order": {"name": "Order #2002", "product_name": "Heatbox"}},
+        }
+    )
+
+    assert analysis.customer_language == "de"
+    assert analysis.summary == "Customer says order #2002 has not arrived yet."
+    assert analysis.suggested_reply.startswith("Hallo")
+    assert "#2002" in analysis.suggested_reply
+
+
+def test_french_message_with_english_context_detects_fr() -> None:
+    customer_message = "Bonjour, ma commande #3003 n'est toujours pas arrivée."
+    provider = make_provider(
+        analysis_content(
+            customer_language="fr",
+            summary="Customer says order #3003 still has not arrived.",
+            suggested_reply="Bonjour, nous allons vérifier la commande #3003.",
+        )
+    )
+
+    analysis = provider.analyze(
+        {
+            "latest_customer_message": customer_message,
+            "ticket": {"order": {"name": "Order #3003", "product_name": "Heatbox"}},
+        }
+    )
+
+    assert analysis.customer_language == "fr"
+    assert analysis.summary == "Customer says order #3003 still has not arrived."
+    assert analysis.suggested_reply.startswith("Bonjour")
+    assert "#3003" in analysis.suggested_reply
+
+
+def test_japanese_message_with_english_context_detects_ja() -> None:
+    customer_message = "こんにちは、注文 #4004 はまだ届いていません。"
+    provider = make_provider(
+        analysis_content(
+            customer_language="ja",
+            summary="Customer says order #4004 has not arrived yet.",
+            suggested_reply="こんにちは、注文 #4004 を確認して折り返しご連絡します。",
+        )
+    )
+
+    analysis = provider.analyze(
+        {
+            "latest_customer_message": customer_message,
+            "ticket": {"order": {"name": "Order #4004", "product_name": "Heatbox"}},
+        }
+    )
+
+    assert analysis.customer_language == "ja"
+    assert analysis.summary == "Customer says order #4004 has not arrived yet."
+    assert analysis.suggested_reply.startswith("こんにちは")
+    assert "#4004" in analysis.suggested_reply
+
+
+def test_english_message_with_english_context_detects_en() -> None:
+    customer_message = "Hi, can you check where order #5005 is?"
+    provider = make_provider(
+        analysis_content(
+            customer_language="en",
+            summary="Customer asks where order #5005 is.",
+            suggested_reply="Hi, we will check order #5005 and follow up shortly.",
+        )
+    )
+
+    analysis = provider.analyze(
+        {
+            "latest_customer_message": customer_message,
+            "ticket": {"order": {"name": "Order #5005", "product_name": "Heatbox"}},
+        }
+    )
+
+    assert analysis.customer_language == "en"
+    assert analysis.summary == "Customer asks where order #5005 is."
+    assert analysis.suggested_reply.startswith("Hi")
+    assert "#5005" in analysis.suggested_reply
+
+
+def test_latest_inbound_customer_message_is_selected_by_timestamp() -> None:
+    serbian_message = "Zdravo, moja porudžbina #1001 još nije stigla."
+    ticket = {
+        "subject": "English subject should not be selected",
+        "messages": [
+            {
+                "body_text": serbian_message,
+                "public": True,
+                "sender": {"type": "customer"},
+                "created_datetime": "2026-08-25T10:00:00Z",
+            },
+            {
+                "body_text": "Hallo, meine Bestellung ist noch nicht angekommen.",
+                "public": True,
+                "sender": {"type": "customer"},
+                "created_datetime": "2026-08-24T10:00:00Z",
+            },
+            {
+                "body_text": "AI SUPPORT ANALYSIS\nEnglish internal note.",
+                "public": False,
+                "sender": {"type": "agent"},
+                "created_datetime": "2026-08-25T11:00:00Z",
+            },
+            {
+                "body_text": "Agent reply in English.",
+                "public": True,
+                "from_agent": True,
+                "sender": {"type": "agent"},
+                "created_datetime": "2026-08-25T12:00:00Z",
+            },
+        ],
+    }
+
+    assert extract_latest_customer_message(ticket, {}) == serbian_message

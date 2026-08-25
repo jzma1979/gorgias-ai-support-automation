@@ -142,6 +142,8 @@ class OpenRouterProvider:
             raise AIProviderError("OpenRouter analysis did not match the schema.") from exc
 
     def _build_prompt(self, ticket_context: Mapping[str, Any]) -> str:
+        customer_message = str(ticket_context.get("latest_customer_message") or "").strip()
+        business_context = self._business_context_without_language_sources(ticket_context)
         schema = {
             "customer_language": (
                 "ISO 639-1 language code for the customer's original message, "
@@ -166,9 +168,61 @@ class OpenRouterProvider:
         return (
             "Analyze the latest meaningful customer support message and available "
             "ticket/customer/order context. Return JSON only.\n\n"
+            "IMPORTANT:\n"
+            "Determine `customer_language` exclusively from the text inside "
+            "CUSTOMER MESSAGE — LANGUAGE DETECTION SOURCE.\n"
+            "Ignore the language of every other section when determining "
+            "customer_language.\n\n"
+            "Examples:\n"
+            'Serbian customer message + English Shopify context -> customer_language = "sr"\n'
+            'German customer message + English order metadata -> customer_language = "de"\n'
+            'Japanese customer message + English system/business context -> customer_language = "ja"\n'
+            'English customer message -> customer_language = "en"\n\n'
             f"Schema:\n{json.dumps(schema, indent=2)}\n\n"
-            f"Context:\n{json.dumps(ticket_context, default=str)[:12000]}"
+            "CUSTOMER MESSAGE — LANGUAGE DETECTION SOURCE:\n"
+            '"""\n'
+            f"{customer_message}\n"
+            '"""\n\n'
+            "ORDER / BUSINESS CONTEXT — DO NOT USE FOR LANGUAGE DETECTION:\n"
+            '"""\n'
+            f"{json.dumps(business_context, default=str)[:12000]}\n"
+            '"""'
         )
+
+    @staticmethod
+    def _business_context_without_language_sources(
+        ticket_context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        context = {
+            key: value
+            for key, value in ticket_context.items()
+            if key != "latest_customer_message"
+        }
+        return OpenRouterProvider._remove_language_source_fields(context)
+
+    @staticmethod
+    def _remove_language_source_fields(value: Any) -> Any:
+        message_keys = {
+            "body",
+            "body_html",
+            "body_text",
+            "comment",
+            "comments",
+            "message",
+            "messages",
+            "stripped_text",
+            "subject",
+            "text",
+        }
+        if isinstance(value, Mapping):
+            return {
+                key: OpenRouterProvider._remove_language_source_fields(item)
+                for key, item in value.items()
+                if str(key).lower() not in message_keys
+            }
+        if isinstance(value, list):
+            return [OpenRouterProvider._remove_language_source_fields(item) for item in value]
+        return value
 
     @staticmethod
     def _extract_json(content: str) -> str:
