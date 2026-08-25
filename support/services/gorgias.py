@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -9,6 +10,12 @@ import requests
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+SENSITIVE_VALUE_RE = re.compile(
+    r"(Basic\s+)[A-Za-z0-9._~+/=-]+|"
+    r"(Bearer\s+)[A-Za-z0-9._~+/=-]+|"
+    r"([A-Za-z0-9_-]{20,})"
+)
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
 class GorgiasAPIError(Exception):
@@ -32,6 +39,7 @@ class GorgiasClient:
             raise GorgiasAPIError("GORGIAS_API_KEY is required.")
 
         self.base_url = base_url.rstrip("/")
+        self.username = username
         self.auth = (username, api_key)
         self.timeout_seconds = timeout_seconds
         self.session = session or requests.Session()
@@ -114,11 +122,11 @@ class GorgiasClient:
                 "POST",
                 f"/api/tickets/{ticket_id}/messages",
                 json_body={
+                    "sender": {"email": self.username},
                     "channel": "internal-note",
-                    "source": {"type": "internal-note"},
                     "body_text": body,
                     "body_html": html.escape(body).replace("\n", "<br>"),
-                    "public": False,
+                    "from_agent": True,
                     "via": "api",
                 },
             ),
@@ -150,6 +158,11 @@ class GorgiasClient:
 
         status_code = getattr(response, "status_code", 200)
         if status_code < 200 or status_code >= 300:
+            detail = self._safe_error_detail(response)
+            if detail:
+                raise GorgiasAPIError(
+                    f"Gorgias {method} {path} returned HTTP {status_code}: {detail}"
+                )
             raise GorgiasAPIError(f"Gorgias {method} {path} returned HTTP {status_code}.")
 
         if not getattr(response, "content", b""):
@@ -179,3 +192,35 @@ class GorgiasClient:
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
         return []
+
+    @staticmethod
+    def _safe_error_detail(response: requests.Response) -> str:
+        detail = ""
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if isinstance(payload, Mapping):
+            error = payload.get("error")
+            if isinstance(error, Mapping):
+                message = error.get("message") or error.get("code")
+                if message:
+                    detail = str(message)
+            elif isinstance(error, str):
+                detail = error
+
+            if not detail:
+                for key in ("message", "detail", "errors"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        detail = value
+                        break
+
+        if not detail:
+            detail = str(getattr(response, "text", "") or "")
+
+        detail = " ".join(detail.split())
+        detail = SENSITIVE_VALUE_RE.sub("[redacted]", detail)
+        detail = EMAIL_RE.sub("[redacted-email]", detail)
+        return detail[:240]

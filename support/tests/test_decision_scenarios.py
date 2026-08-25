@@ -5,6 +5,7 @@ from typing import Any
 
 from support.schemas import SupportAnalysis
 from support.services.ai.base import AIProviderError
+from support.services.ai.openrouter import OpenRouterProvider
 from support.services.processor import SupportTicketProcessor
 
 
@@ -201,3 +202,45 @@ def test_ai_provider_failure_falls_back_to_human_review() -> None:
     assert fake_client.priority == "normal"
     assert fake_client.tags == ("AI_REVIEW_REQUIRED", "AI_MEDIUM_RISK")
     assert "AI analysis could not be completed reliably" in fake_client.note
+
+
+class IncompleteOpenRouterResponse:
+    status_code = 200
+    content = b"{}"
+
+    def json(self) -> dict[str, Any]:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"intent":"order_status"}',
+                    }
+                }
+            ]
+        }
+
+
+class IncompleteOpenRouterSession:
+    def post(self, *args: Any, **kwargs: Any) -> IncompleteOpenRouterResponse:
+        return IncompleteOpenRouterResponse()
+
+
+def test_incomplete_openrouter_structured_json_falls_back_safely() -> None:
+    ticket = make_ticket("Could you help me with my order?")
+    fake_client = FakeGorgiasClient(ticket)
+    openrouter_provider = OpenRouterProvider(
+        api_key="test-key",
+        model="openrouter/free",
+        timeout_seconds=1,
+        session=IncompleteOpenRouterSession(),
+    )
+
+    result = SupportTicketProcessor(
+        gorgias_client=fake_client,
+        ai_provider=openrouter_provider,
+    ).process("123", {})
+
+    assert result.analysis.confidence == 0.0
+    assert result.analysis.recommended_action == "agent_review"
+    assert fake_client.priority == "normal"
+    assert fake_client.tags == ("AI_REVIEW_REQUIRED", "AI_MEDIUM_RISK")

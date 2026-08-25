@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from support.schemas import SupportAnalysis
 from support.services.ai.base import AIProviderError
 from support.services.ai.openrouter import OpenRouterProvider
 
@@ -117,6 +118,78 @@ def test_openrouter_calls_chat_completions_endpoint() -> None:
     provider.analyze({"latest_customer_message": "Where is my order?"})
 
     assert session.calls[0]["args"][0] == "https://openrouter.ai/api/v1/chat/completions"
+
+
+def test_openrouter_requests_strict_json_schema_response_format() -> None:
+    session = FakeSession(FakeResponse(valid_analysis_payload()))
+    provider = OpenRouterProvider(
+        api_key="test-key",
+        model="openrouter/free",
+        base_url="https://openrouter.ai/api/v1",
+        timeout_seconds=1,
+        session=session,
+    )
+
+    provider.analyze({"latest_customer_message": "Where is my order?"})
+
+    request_json = session.calls[0]["kwargs"]["json"]
+    response_format = request_json["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "support_analysis"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"] == SupportAnalysis.model_json_schema()
+    assert request_json["provider"]["require_parameters"] is True
+
+
+def test_openrouter_valid_structured_json_parses_successfully() -> None:
+    session = FakeSession(FakeResponse(valid_analysis_payload()))
+    provider = OpenRouterProvider(
+        api_key="test-key",
+        model="openrouter/free",
+        timeout_seconds=1,
+        session=session,
+    )
+
+    analysis = provider.analyze({"latest_customer_message": "Where is my order?"})
+
+    assert analysis.intent == "order_status"
+    assert analysis.confidence == 0.91
+
+
+def test_openrouter_validation_error_names_failed_fields_only() -> None:
+    session = FakeSession(
+        FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"intent":"order_status","summary":"Customer asks for tracking."}'
+                            ),
+                        }
+                    }
+                ]
+            }
+        )
+    )
+    provider = OpenRouterProvider(
+        api_key="test-secret-key",
+        model="openrouter/free",
+        timeout_seconds=1,
+        session=session,
+    )
+
+    try:
+        provider.analyze({"latest_customer_message": "customer@example.com asks about order 123"})
+    except AIProviderError as exc:
+        message = str(exc)
+        assert "Failed fields:" in message
+        assert "sentiment" in message
+        assert "suggested_reply" in message
+        assert "customer@example.com" not in message
+        assert "test-secret-key" not in message
+    else:
+        raise AssertionError("Incomplete structured output should fail validation.")
 
 
 def test_openrouter_404_keeps_safe_error_information() -> None:

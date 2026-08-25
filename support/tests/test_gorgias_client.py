@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from support.services.gorgias import GorgiasClient
+from support.services.gorgias import GorgiasAPIError, GorgiasClient
 
 
 class FakeResponse:
-    status_code = 200
-    content = b"{}"
-
-    def __init__(self, payload: Any):
+    def __init__(self, payload: Any, status_code: int = 200, text: str = ""):
         self.payload = payload
+        self.status_code = status_code
+        self.text = text
+        self.content = b"{}"
 
     def json(self) -> Any:
         return self.payload
@@ -113,3 +113,52 @@ def test_ticket_tags_are_added_with_ids_payload() -> None:
     assert session.calls[2]["method"] == "POST"
     assert session.calls[2]["url"] == "https://example.gorgias.com/api/tickets/99/tags"
     assert session.calls[2]["json"] == {"ids": [123, 456]}
+
+
+def test_internal_note_uses_current_gorgias_contract() -> None:
+    session = QueueSession(FakeResponse({"id": "message-1"}))
+    client = make_client(session)
+
+    client.create_internal_note("99", "AI note <b>review</b>\nNext line")
+
+    payload = session.calls[0]["json"]
+    assert session.calls[0]["method"] == "POST"
+    assert session.calls[0]["url"] == "https://example.gorgias.com/api/tickets/99/messages"
+    assert payload["sender"] == {"email": "user"}
+    assert payload["channel"] == "internal-note"
+    assert payload["from_agent"] is True
+    assert payload["via"] == "api"
+    assert "receiver" not in payload
+    assert "source" not in payload
+    assert "public" not in payload
+    assert payload["body_text"] == "AI note <b>review</b>\nNext line"
+    assert payload["body_html"] == "AI note &lt;b&gt;review&lt;/b&gt;<br>Next line"
+
+
+def test_gorgias_400_keeps_safe_error_information() -> None:
+    session = QueueSession(
+        FakeResponse(
+            {
+                "error": {
+                    "message": (
+                        "Invalid internal note sender user@example.com "
+                        "abcdefghijklmnopqrstuvwxyz123456"
+                    )
+                }
+            },
+            status_code=400,
+        )
+    )
+    client = make_client(session)
+
+    try:
+        client.create_internal_note("99", "AI note")
+    except GorgiasAPIError as exc:
+        message = str(exc)
+        assert "Gorgias POST /api/tickets/99/messages returned HTTP 400" in message
+        assert "Invalid internal note sender" in message
+        assert "user@example.com" not in message
+        assert "abcdefghijklmnopqrstuvwxyz123456" not in message
+        assert "key" not in message
+    else:
+        raise AssertionError("Gorgias 400 should raise an API error.")

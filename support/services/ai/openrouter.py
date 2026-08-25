@@ -62,7 +62,15 @@ class OpenRouterProvider:
         payload = {
             "model": self.model,
             "temperature": 0.1,
-            "response_format": {"type": "json_object"},
+            "provider": {"require_parameters": True},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "support_analysis",
+                    "strict": True,
+                    "schema": SupportAnalysis.model_json_schema(),
+                },
+            },
             "messages": [
                 {
                     "role": "system",
@@ -112,7 +120,13 @@ class OpenRouterProvider:
 
         try:
             return SupportAnalysis.model_validate_json(self._extract_json(content))
-        except (ValidationError, ValueError) as exc:
+        except ValidationError as exc:
+            failed_fields = self._validation_error_fields(exc)
+            raise AIProviderError(
+                "OpenRouter analysis did not match the schema. "
+                f"Failed fields: {failed_fields}."
+            ) from exc
+        except ValueError as exc:
             raise AIProviderError("OpenRouter analysis did not match the schema.") from exc
 
     def _build_prompt(self, ticket_context: Mapping[str, Any]) -> str:
@@ -186,3 +200,15 @@ class OpenRouterProvider:
         detail = " ".join(detail.split())
         detail = SENSITIVE_VALUE_RE.sub("[redacted]", detail)
         return detail[:240]
+
+    @staticmethod
+    def _validation_error_fields(error: ValidationError) -> str:
+        fields: list[str] = []
+        for item in error.errors():
+            location = item.get("loc", ())
+            if not location:
+                continue
+            field = ".".join(str(part) for part in location)
+            if field not in fields:
+                fields.append(field)
+        return ", ".join(fields) if fields else "unknown"
