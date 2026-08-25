@@ -23,6 +23,117 @@ from support.services.gorgias import GorgiasAPIError, GorgiasClient
 logger = logging.getLogger(__name__)
 TAG_RE = re.compile(r"<[^>]+>")
 EVENT_MESSAGE_MARKER = "_event_payload_message"
+SUPPORTED_REPLY_LANGUAGES = {"en", "sr", "de", "fr", "ja"}
+SHIPPING_DELAY_UNSAFE_REPLY_TERMS = (
+    "has shipped",
+    "have shipped",
+    "is shipped",
+    "was shipped",
+    "tracking is available",
+    "out for delivery",
+)
+PRODUCT_DEFECT_UNSAFE_REPLY_TERMS = (
+    "replacement immediately",
+    "replacement right away",
+    "send a replacement",
+    "issue a replacement",
+    "refund immediately",
+    "refund right away",
+    "issue a refund",
+    "replacement is approved",
+    "refund is approved",
+    "we will replace",
+    "we'll replace",
+    "we will refund",
+    "we'll refund",
+)
+ENGLISH_CANNED_REPLY_TERMS = (
+    "thanks for reaching out",
+    "thank you for reaching out",
+    "we will",
+    "we'll",
+    "i am checking",
+    "i'm checking",
+    "please share",
+    "our team",
+)
+LOCALIZED_GUARDRAIL_REPLIES = {
+    "safety": {
+        "en": (
+            "Do not send an automated reply. A human agent should review immediately, "
+            "acknowledge the safety concern, and follow the approved escalation process."
+        ),
+        "sr": (
+            "Ne šaljite automatski odgovor. Ljudski agent treba odmah da pregleda "
+            "slučaj, potvrdi bezbednosnu zabrinutost i prati odobreni postupak eskalacije."
+        ),
+        "de": (
+            "Senden Sie keine automatische Antwort. Ein menschlicher Mitarbeiter sollte "
+            "den Fall sofort prüfen, das Sicherheitsanliegen bestätigen und den "
+            "freigegebenen Eskalationsprozess befolgen."
+        ),
+        "fr": (
+            "N'envoyez pas de réponse automatique. Un agent humain doit examiner le "
+            "dossier immédiatement, reconnaître le problème de sécurité et suivre la "
+            "procédure d'escalade approuvée."
+        ),
+        "ja": (
+            "自動返信は送信しないでください。担当者が直ちに内容を確認し、安全上の懸念を"
+            "受け止めたうえで、承認済みのエスカレーション手順に従う必要があります。"
+        ),
+    },
+    "shipping_delay": {
+        "en": (
+            "Thanks for reaching out. I am checking the fulfillment status for your "
+            "order and will confirm the next step after reviewing the shipment details."
+        ),
+        "sr": (
+            "Hvala što ste nam se javili. Proveravam status ispunjenja vaše porudžbine "
+            "i potvrdiću sledeći korak nakon pregleda detalja isporuke."
+        ),
+        "de": (
+            "Danke für Ihre Nachricht. Ich prüfe den Fulfillment-Status Ihrer Bestellung "
+            "und bestätige den nächsten Schritt, sobald ich die Versanddetails geprüft habe."
+        ),
+        "fr": (
+            "Merci de nous avoir contactés. Je vérifie le statut de préparation de votre "
+            "commande et confirmerai la prochaine étape après examen des détails d'expédition."
+        ),
+        "ja": (
+            "お問い合わせありがとうございます。ご注文の処理状況を確認し、配送情報を確認した"
+            "うえで次の対応をご案内します。"
+        ),
+    },
+    "product_defect": {
+        "en": (
+            "I am sorry the product is not working as expected. Please share the order "
+            "number, a brief photo or video of the issue, and whether the basic charging "
+            "and reset steps have already been tried so our team can review the warranty case."
+        ),
+        "sr": (
+            "Žao mi je što proizvod ne radi kako se očekuje. Pošaljite broj porudžbine, "
+            "kratku fotografiju ili video problema i navedite da li ste već probali "
+            "osnovno punjenje i resetovanje, kako bi naš tim pregledao garancijski slučaj."
+        ),
+        "de": (
+            "Es tut mir leid, dass das Produkt nicht wie erwartet funktioniert. Bitte "
+            "teilen Sie die Bestellnummer, ein kurzes Foto oder Video des Problems und "
+            "ob die grundlegenden Lade- und Reset-Schritte bereits ausprobiert wurden, "
+            "damit unser Team den Garantiefall prüfen kann."
+        ),
+        "fr": (
+            "Je suis désolé que le produit ne fonctionne pas comme prévu. Veuillez "
+            "indiquer le numéro de commande, envoyer une courte photo ou vidéo du "
+            "problème et préciser si les étapes de charge et de réinitialisation de "
+            "base ont déjà été essayées afin que notre équipe examine le dossier de garantie."
+        ),
+        "ja": (
+            "製品が想定どおりに動作していないとのことで申し訳ありません。保証確認のため、"
+            "注文番号、問題が分かる短い写真または動画、基本的な充電やリセットをすでに"
+            "お試しいただいたかをお知らせください。"
+        ),
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -279,20 +390,53 @@ def _is_agent_or_internal_message(message: Mapping[str, Any]) -> bool:
 
 
 def _safe_suggested_reply(analysis: SupportAnalysis, decision: SupportDecision) -> str:
+    suggested_reply = analysis.suggested_reply.strip()
+    customer_language = _reply_language(analysis.customer_language)
+
     if "AI_SAFETY" in decision.tags:
-        return (
-            "Do not send an automated reply. A human agent should review immediately, "
-            "acknowledge the safety concern, and follow the approved escalation process."
-        )
-    if "AI_SHIPPING_DELAY" in decision.tags:
-        return (
-            "Thanks for reaching out. I am checking the fulfillment status for your "
-            "order and will confirm the next step after reviewing the shipment details."
-        )
-    if "AI_PRODUCT_DEFECT" in decision.tags:
-        return (
-            "I am sorry the product is not working as expected. Please share the order "
-            "number, a brief photo or video of the issue, and whether the basic charging "
-            "and reset steps have already been tried so our team can review the warranty case."
-        )
-    return analysis.suggested_reply.strip()
+        return _localized_guardrail_reply("safety", customer_language)
+    if "AI_SHIPPING_DELAY" in decision.tags and _requires_localized_guardrail(
+        suggested_reply,
+        customer_language,
+        SHIPPING_DELAY_UNSAFE_REPLY_TERMS,
+    ):
+        return _localized_guardrail_reply("shipping_delay", customer_language)
+    if "AI_PRODUCT_DEFECT" in decision.tags and _requires_localized_guardrail(
+        suggested_reply,
+        customer_language,
+        PRODUCT_DEFECT_UNSAFE_REPLY_TERMS,
+    ):
+        return _localized_guardrail_reply("product_defect", customer_language)
+    return suggested_reply
+
+
+def _reply_language(customer_language: str) -> str:
+    language = customer_language.strip().lower().replace("_", "-").split("-", 1)[0]
+    if language in SUPPORTED_REPLY_LANGUAGES:
+        return language
+    return "en"
+
+
+def _localized_guardrail_reply(guardrail: str, customer_language: str) -> str:
+    replies = LOCALIZED_GUARDRAIL_REPLIES[guardrail]
+    return replies.get(customer_language, replies["en"])
+
+
+def _requires_localized_guardrail(
+    suggested_reply: str,
+    customer_language: str,
+    unsafe_terms: tuple[str, ...],
+) -> bool:
+    if _contains_any_casefold(suggested_reply, unsafe_terms):
+        return True
+    if customer_language != "en" and _contains_any_casefold(
+        suggested_reply,
+        ENGLISH_CANNED_REPLY_TERMS,
+    ):
+        return True
+    return False
+
+
+def _contains_any_casefold(text: str, terms: tuple[str, ...]) -> bool:
+    normalized = text.casefold()
+    return any(term in normalized for term in terms)

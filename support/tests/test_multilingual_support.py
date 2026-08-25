@@ -176,6 +176,76 @@ def test_identifiers_are_preserved_in_analysis_and_internal_note() -> None:
     assert "Heatbox" in note
 
 
+def test_shipping_delay_preserves_serbian_reply_and_english_internal_fields() -> None:
+    analysis = SupportAnalysis(
+        customer_language="sr",
+        intent="shipping_delay",
+        sentiment="negative",
+        urgency="high",
+        risk="high",
+        confidence=0.92,
+        summary="Customer reports the order has not arrived after more than one week.",
+        suggested_reply=(
+            "Zdravo, proverićemo gde je paket i javiti vam se čim pregledamo "
+            "detalje isporuke."
+        ),
+        recommended_action="agent_review",
+        reasoning_summary="Shipping delay should be reviewed by a human agent.",
+    )
+    decision = SupportDecision(
+        priority="high",
+        tags=("AI_SHIPPING_DELAY", "AI_ESCALATED"),
+        recommended_action="escalate",
+        human_review_required=True,
+        customer_reply_allowed=False,
+        decision_reason=(
+            "Order appears unfulfilled and the customer is asking about a delay. "
+            "Do not claim the order has shipped."
+        ),
+    )
+
+    note = build_internal_note(analysis, decision)
+
+    assert "Summary:\nCustomer reports the order has not arrived" in note
+    assert "Decision:\nOrder appears unfulfilled" in note
+    assert "Suggested reply:\nZdravo, proverićemo gde je paket" in note
+    assert "Thanks for reaching out" not in note
+
+
+def test_shipping_delay_guardrail_replacement_is_serbian() -> None:
+    analysis = SupportAnalysis(
+        customer_language="sr",
+        intent="shipping_delay",
+        sentiment="negative",
+        urgency="high",
+        risk="high",
+        confidence=0.92,
+        summary="Customer reports the order has not arrived after more than one week.",
+        suggested_reply="Your order has shipped and tracking is available.",
+        recommended_action="agent_review",
+        reasoning_summary="Shipping delay should be reviewed by a human agent.",
+    )
+    decision = SupportDecision(
+        priority="high",
+        tags=("AI_SHIPPING_DELAY", "AI_ESCALATED"),
+        recommended_action="escalate",
+        human_review_required=True,
+        customer_reply_allowed=False,
+        decision_reason=(
+            "Order appears unfulfilled and the customer is asking about a delay. "
+            "Do not claim the order has shipped."
+        ),
+    )
+
+    note = build_internal_note(analysis, decision)
+
+    assert "Summary:\nCustomer reports the order has not arrived" in note
+    assert "Decision:\nOrder appears unfulfilled" in note
+    assert "Suggested reply:\nHvala što ste nam se javili" in note
+    assert "Your order has shipped" not in note
+    assert "Thanks for reaching out" not in note
+
+
 def test_fallback_analysis_uses_unknown_language() -> None:
     analysis = fallback_analysis("AI provider failed.")
 
