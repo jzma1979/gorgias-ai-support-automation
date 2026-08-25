@@ -32,7 +32,8 @@ def valid_analysis_payload() -> dict:
             {
                 "message": {
                     "content": (
-                        '{"intent":"order_status","sentiment":"neutral",'
+                        '{"customer_language":"en","intent":"order_status",'
+                        '"sentiment":"neutral",'
                         '"urgency":"low","risk":"low","confidence":0.91,'
                         '"summary":"Customer asks for tracking.",'
                         '"suggested_reply":"Thanks, we will check the tracking.",'
@@ -141,6 +142,27 @@ def test_openrouter_requests_strict_json_schema_response_format() -> None:
     assert request_json["provider"]["require_parameters"] is True
 
 
+def test_openrouter_prompt_instructs_multilingual_output() -> None:
+    session = FakeSession(FakeResponse(valid_analysis_payload()))
+    provider = OpenRouterProvider(
+        api_key="test-key",
+        model="openrouter/free",
+        timeout_seconds=1,
+        session=session,
+    )
+
+    provider.analyze({"latest_customer_message": "Zdravo, gde je porudzbina #1001?"})
+
+    system_prompt = session.calls[0]["kwargs"]["json"]["messages"][0]["content"]
+    assert "customer_language" in system_prompt
+    assert "Always write summary in English" in system_prompt
+    assert "Always write suggested_reply in" in system_prompt
+    assert "Do not translate or alter" in system_prompt
+    assert "order IDs" in system_prompt
+    assert "tracking numbers" in system_prompt
+    assert "URLs" in system_prompt
+
+
 def test_openrouter_valid_structured_json_parses_successfully() -> None:
     session = FakeSession(FakeResponse(valid_analysis_payload()))
     provider = OpenRouterProvider(
@@ -153,6 +175,7 @@ def test_openrouter_valid_structured_json_parses_successfully() -> None:
     analysis = provider.analyze({"latest_customer_message": "Where is my order?"})
 
     assert analysis.intent == "order_status"
+    assert analysis.customer_language == "en"
     assert analysis.confidence == 0.91
 
 

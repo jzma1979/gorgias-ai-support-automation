@@ -22,6 +22,7 @@ RecommendedAction = Literal["auto_resolve", "agent_review", "escalate"]
 class SupportAnalysis(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
+    customer_language: str = Field(min_length=2, max_length=16)
     intent: Intent
     sentiment: Sentiment
     urgency: Urgency
@@ -31,6 +32,16 @@ class SupportAnalysis(BaseModel):
     suggested_reply: str = Field(min_length=1, max_length=4000)
     recommended_action: RecommendedAction
     reasoning_summary: str = Field(min_length=1, max_length=1200)
+
+    @field_validator("customer_language", mode="before")
+    @classmethod
+    def normalize_customer_language(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("customer_language is required")
+        text = str(value).strip().lower()
+        if not text:
+            raise ValueError("customer_language must not be blank")
+        return text
 
     @field_validator("summary", "suggested_reply", "reasoning_summary", mode="before")
     @classmethod
@@ -46,6 +57,7 @@ class SupportAnalysis(BaseModel):
 def fallback_analysis(reason: str) -> SupportAnalysis:
     safe_reason = reason.strip() or "AI analysis was unavailable."
     return SupportAnalysis(
+        customer_language="unknown",
         intent="other",
         sentiment="neutral",
         urgency="medium",

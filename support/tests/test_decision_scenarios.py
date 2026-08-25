@@ -52,6 +52,7 @@ class FakeGorgiasClient:
 
 def make_analysis(**overrides: Any) -> SupportAnalysis:
     data = {
+        "customer_language": "en",
         "intent": "other",
         "sentiment": "neutral",
         "urgency": "medium",

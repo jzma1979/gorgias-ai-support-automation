@@ -10,6 +10,7 @@ Ecommerce support teams often receive repetitive order-status, shipping-delay, a
 
 - classify the latest meaningful customer message
 - summarize the support issue
+- detect the customer's language for agent review
 - recommend an agent-reviewed reply
 - enforce escalation rules in deterministic code
 - write a clean internal note back to Gorgias
@@ -46,6 +47,8 @@ Main separation of concerns:
 AI classification is advisory. Final priority, tags, and action selection are decided by Python rules.
 
 Safety-related language is escalated in code even if the model recommends a low-risk action. The service never auto-closes tickets and never sends a customer-facing response.
+
+The internal analysis summary is always written in English for the support agent. The suggested reply is drafted in the customer's original language when the language can be identified, or English when it is unknown.
 
 The demo currently uses a free inference provider to avoid unnecessary demo costs. The AI layer is provider-agnostic and can be replaced with Anthropic Claude without changing the Gorgias workflow or decision engine.
 
@@ -124,6 +127,7 @@ The test suite mocks Gorgias and AI calls. It covers:
 - shipping delay
 - product defect
 - safety issue override
+- multilingual customer-language handling
 - malformed AI output
 - Gorgias API failure
 - webhook loop prevention
@@ -166,7 +170,7 @@ No changes should be needed in:
 
 ## Known Limitations
 
-- Processing is synchronous for simplicity.
+- Webhooks are acknowledged quickly and processed by a small process-local background executor.
 - Idempotency uses Django's local memory cache, which is acceptable for a small demo but not durable across restarts.
 - The Gorgias API methods are intentionally small and should be expanded after confirming exact production account payloads.
 - The service writes internal notes only; it does not send customer-facing replies.

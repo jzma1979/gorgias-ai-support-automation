@@ -125,6 +125,7 @@ def build_internal_note(analysis: SupportAnalysis, decision: SupportDecision) ->
 
     return (
         "AI SUPPORT ANALYSIS\n\n"
+        f"Customer language: {analysis.customer_language}\n"
         f"Intent: {analysis.intent}\n"
         f"Sentiment: {analysis.sentiment}\n"
         f"Urgency: {analysis.urgency}\n"

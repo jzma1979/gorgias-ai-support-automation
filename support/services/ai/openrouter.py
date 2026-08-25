@@ -77,8 +77,20 @@ class OpenRouterProvider:
                     "content": (
                         "You are a support operations classifier for an ecommerce "
                         "team. Return only valid JSON matching the requested schema. "
-                        "Do not include hidden chain-of-thought. reasoning_summary "
-                        "must be a short operational justification."
+                        "Detect the customer's original message language and set "
+                        "customer_language to an ISO 639-1 code when possible, or "
+                        "'unknown' when uncertain. Always write summary in English "
+                        "for internal agent review. Always write suggested_reply in "
+                        "the customer's original language; use English if "
+                        "customer_language is unknown. Do not translate or alter "
+                        "customer names, product names, SKUs, order IDs, tracking "
+                        "numbers, URLs, coupon codes, or other identifiers. Do not "
+                        "invent order, shipping, refund, delivery, policy, or promise "
+                        "facts not present in the provided context. Do not infer "
+                        "'out for delivery' from 'fulfilled'. Safety-related tickets "
+                        "must remain human-review only. Do not include hidden "
+                        "chain-of-thought. reasoning_summary must be a short "
+                        "operational justification."
                     ),
                 },
                 {
@@ -131,6 +143,10 @@ class OpenRouterProvider:
 
     def _build_prompt(self, ticket_context: Mapping[str, Any]) -> str:
         schema = {
+            "customer_language": (
+                "ISO 639-1 language code for the customer's original message, "
+                "or unknown"
+            ),
             "intent": (
                 "order_status | shipping_delay | product_defect | safety_issue | "
                 "refund_request | cancellation | other"
@@ -139,8 +155,11 @@ class OpenRouterProvider:
             "urgency": "low | medium | high | critical",
             "risk": "low | medium | high | critical",
             "confidence": "number between 0 and 1",
-            "summary": "brief customer issue summary",
-            "suggested_reply": "draft reply for a human agent to review",
+            "summary": "brief customer issue summary, always in English",
+            "suggested_reply": (
+                "draft reply for a human agent to review, written in the customer's "
+                "original language unless customer_language is unknown"
+            ),
             "recommended_action": "auto_resolve | agent_review | escalate",
             "reasoning_summary": "short operational explanation only",
         }
