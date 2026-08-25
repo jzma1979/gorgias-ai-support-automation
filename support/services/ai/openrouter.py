@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -13,6 +14,12 @@ from support.schemas import SupportAnalysis
 from support.services.ai.base import AIProviderError
 
 logger = logging.getLogger(__name__)
+OPENROUTER_FREE_ROUTER = "openrouter/free"
+SENSITIVE_VALUE_RE = re.compile(
+    r"(Bearer\s+)[A-Za-z0-9._~+/=-]+|"
+    r"(sk-[A-Za-z0-9_-]+)|"
+    r"([A-Za-z0-9_-]{20,})"
+)
 
 
 class OpenRouterProvider:
@@ -28,9 +35,10 @@ class OpenRouterProvider:
             raise AIProviderError("OPENROUTER_API_KEY is required.")
         if not model:
             raise AIProviderError("OPENROUTER_MODEL is required.")
-        if ":free" not in model.lower():
+        if not self._is_allowed_free_model(model):
             raise AIProviderError(
-                "OPENROUTER_MODEL must be an OpenRouter free model ending in ':free'."
+                "OPENROUTER_MODEL must be 'openrouter/free' or an OpenRouter "
+                "free model containing ':free'."
             )
 
         self.api_key = api_key
@@ -89,6 +97,11 @@ class OpenRouterProvider:
 
         status_code = getattr(response, "status_code", 200)
         if status_code < 200 or status_code >= 300:
+            detail = self._safe_error_detail(response)
+            if detail:
+                raise AIProviderError(
+                    f"OpenRouter returned HTTP {status_code}: {detail}"
+                )
             raise AIProviderError(f"OpenRouter returned HTTP {status_code}.")
 
         try:
@@ -140,3 +153,36 @@ class OpenRouterProvider:
             candidate = text[start : end + 1]
             json.loads(candidate)
             return candidate
+
+    @staticmethod
+    def _is_allowed_free_model(model: str) -> bool:
+        normalized = model.strip().lower()
+        return normalized == OPENROUTER_FREE_ROUTER or ":free" in normalized
+
+    @staticmethod
+    def _safe_error_detail(response: requests.Response) -> str:
+        detail = ""
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if isinstance(payload, Mapping):
+            error = payload.get("error")
+            if isinstance(error, Mapping):
+                message = error.get("message") or error.get("code")
+                if message:
+                    detail = str(message)
+            if not detail:
+                for key in ("message", "detail", "error"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        detail = value
+                        break
+
+        if not detail:
+            detail = str(getattr(response, "text", "") or "")
+
+        detail = " ".join(detail.split())
+        detail = SENSITIVE_VALUE_RE.sub("[redacted]", detail)
+        return detail[:240]

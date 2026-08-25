@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import logging
 import html
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -46,16 +46,25 @@ class GorgiasClient:
         )
 
     def get_ticket(self, ticket_id: int | str) -> dict[str, Any]:
-        return self._request("GET", f"/api/tickets/{ticket_id}")
+        return self._ensure_dict(
+            self._request("GET", f"/api/tickets/{ticket_id}"),
+            f"Gorgias GET /api/tickets/{ticket_id}",
+        )
 
     def get_customer(self, customer_id: int | str) -> dict[str, Any]:
-        return self._request("GET", f"/api/customers/{customer_id}")
+        return self._ensure_dict(
+            self._request("GET", f"/api/customers/{customer_id}"),
+            f"Gorgias GET /api/customers/{customer_id}",
+        )
 
     def update_ticket_priority(self, ticket_id: int | str, priority: str) -> dict[str, Any]:
-        return self._request(
-            "PUT",
-            f"/api/tickets/{ticket_id}",
-            json_body={"priority": priority},
+        return self._ensure_dict(
+            self._request(
+                "PUT",
+                f"/api/tickets/{ticket_id}",
+                json_body={"priority": priority},
+            ),
+            f"Gorgias PUT /api/tickets/{ticket_id}",
         )
 
     def resolve_or_create_tag(self, name: str) -> int | str:
@@ -66,16 +75,17 @@ class GorgiasClient:
         search_payload = self._request(
             "GET",
             "/api/tags",
-            params={"name": clean_name},
+            params={"search": clean_name},
         )
         for tag in self._extract_collection(search_payload):
             if str(tag.get("name", "")).lower() == clean_name.lower() and tag.get("id"):
                 return tag["id"]
 
         created = self._request("POST", "/api/tags", json_body={"name": clean_name})
-        tag_id = created.get("id")
-        if tag_id:
-            return tag_id
+        if isinstance(created, Mapping):
+            tag_id = created.get("id")
+            if tag_id:
+                return tag_id
 
         for tag in self._extract_collection(created):
             if str(tag.get("name", "")).lower() == clean_name.lower() and tag.get("id"):
@@ -89,24 +99,30 @@ class GorgiasClient:
         tag_names: list[str] | tuple[str, ...],
     ) -> dict[str, Any]:
         tag_ids = [self.resolve_or_create_tag(name) for name in tag_names]
-        return self._request(
-            "POST",
-            f"/api/tickets/{ticket_id}/tags",
-            json_body={"tags": [{"id": tag_id} for tag_id in tag_ids]},
+        return self._ensure_dict(
+            self._request(
+                "POST",
+                f"/api/tickets/{ticket_id}/tags",
+                json_body={"ids": tag_ids},
+            ),
+            f"Gorgias POST /api/tickets/{ticket_id}/tags",
         )
 
     def create_internal_note(self, ticket_id: int | str, body: str) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            f"/api/tickets/{ticket_id}/messages",
-            json_body={
-                "channel": "internal-note",
-                "source": {"type": "internal-note"},
-                "body_text": body,
-                "body_html": html.escape(body).replace("\n", "<br>"),
-                "public": False,
-                "via": "api",
-            },
+        return self._ensure_dict(
+            self._request(
+                "POST",
+                f"/api/tickets/{ticket_id}/messages",
+                json_body={
+                    "channel": "internal-note",
+                    "source": {"type": "internal-note"},
+                    "body_text": body,
+                    "body_html": html.escape(body).replace("\n", "<br>"),
+                    "public": False,
+                    "via": "api",
+                },
+            ),
+            f"Gorgias POST /api/tickets/{ticket_id}/messages",
         )
 
     def _request(
@@ -116,7 +132,7 @@ class GorgiasClient:
         *,
         json_body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         url = f"{self.base_url}/{path.lstrip('/')}"
         try:
             response = self.session.request(
@@ -144,9 +160,13 @@ class GorgiasClient:
         except ValueError as exc:
             raise GorgiasAPIError(f"Gorgias {method} {path} returned invalid JSON.") from exc
 
-        if not isinstance(payload, dict):
-            raise GorgiasAPIError(f"Gorgias {method} {path} returned unexpected JSON.")
         return payload
+
+    @staticmethod
+    def _ensure_dict(payload: Any, context: str) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            return payload
+        raise GorgiasAPIError(f"{context} returned unexpected JSON.")
 
     @staticmethod
     def _extract_collection(payload: Any) -> list[dict[str, Any]]:

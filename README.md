@@ -101,7 +101,7 @@ Create a local `.env` from `.env.example`. Never commit `.env`.
 | `GORGIAS_API_KEY` | Gorgias API key |
 | `AI_PROVIDER` | Currently only `openrouter` |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
-| `OPENROUTER_MODEL` | Must be a free model name containing `:free` |
+| `OPENROUTER_MODEL` | Recommended: `openrouter/free`; explicit free variants containing `:free` are also allowed |
 | `EXTERNAL_REQUEST_TIMEOUT_SECONDS` | Timeout for Gorgias and AI HTTP calls |
 | `WEBHOOK_IDEMPOTENCY_TTL_SECONDS` | Duplicate webhook suppression window |
 | `INTEGRATION_NAME` | Used for loop-prevention checks |
@@ -170,4 +170,4 @@ No changes should be needed in:
 - Idempotency uses Django's local memory cache, which is acceptable for a small demo but not durable across restarts.
 - The Gorgias API methods are intentionally small and should be expanded after confirming exact production account payloads.
 - The service writes internal notes only; it does not send customer-facing replies.
-- The OpenRouter provider rejects non-free model names and has no paid fallback.
+- The OpenRouter provider accepts `openrouter/free` and explicit `:free` model variants, rejects paid model names, and has no paid fallback.
