@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import requests
@@ -15,6 +17,8 @@ from support.services.ai.base import AIProviderError
 
 logger = logging.getLogger(__name__)
 OPENROUTER_FREE_ROUTER = "openrouter/free"
+TRANSIENT_HTTP_STATUSES = {429, 502, 503, 504}
+MAX_OPENROUTER_ATTEMPTS = 3
 SENSITIVE_VALUE_RE = re.compile(
     r"(Bearer\s+)[A-Za-z0-9._~+/=-]+|"
     r"(sk-[A-Za-z0-9_-]+)|"
@@ -30,6 +34,8 @@ class OpenRouterProvider:
         base_url: str | None = None,
         timeout_seconds: float | None = None,
         session: requests.Session | None = None,
+        sleep_func: Callable[[float], None] | None = None,
+        jitter_func: Callable[[float, float], float] | None = None,
     ) -> None:
         if not api_key:
             raise AIProviderError("OPENROUTER_API_KEY is required.")
@@ -48,6 +54,8 @@ class OpenRouterProvider:
             timeout_seconds or settings.EXTERNAL_REQUEST_TIMEOUT_SECONDS
         )
         self.session = session or requests.Session()
+        self.sleep_func = sleep_func or time.sleep
+        self.jitter_func = jitter_func or random.uniform
 
     @classmethod
     def from_settings(cls) -> "OpenRouterProvider":
@@ -100,20 +108,7 @@ class OpenRouterProvider:
             ],
         }
 
-        try:
-            response = self.session.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self.timeout_seconds,
-            )
-        except requests.Timeout as exc:
-            raise AIProviderError("OpenRouter request timed out.") from exc
-        except requests.RequestException as exc:
-            raise AIProviderError("OpenRouter request failed.") from exc
+        response = self._post_with_retries(payload)
 
         status_code = getattr(response, "status_code", 200)
         if status_code < 200 or status_code >= 300:
@@ -140,6 +135,47 @@ class OpenRouterProvider:
             ) from exc
         except ValueError as exc:
             raise AIProviderError("OpenRouter analysis did not match the schema.") from exc
+
+    def _post_with_retries(self, payload: Mapping[str, Any]) -> requests.Response:
+        for attempt in range(1, MAX_OPENROUTER_ATTEMPTS + 1):
+            try:
+                response = self.session.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
+            except requests.Timeout as exc:
+                raise AIProviderError("OpenRouter request timed out.") from exc
+            except requests.RequestException as exc:
+                raise AIProviderError("OpenRouter request failed.") from exc
+
+            status_code = getattr(response, "status_code", 200)
+            if (
+                status_code in TRANSIENT_HTTP_STATUSES
+                and attempt < MAX_OPENROUTER_ATTEMPTS
+            ):
+                retry_number = attempt
+                max_retries = MAX_OPENROUTER_ATTEMPTS - 1
+                logger.warning(
+                    "OpenRouter transient failure %s, retry %s/%s",
+                    status_code,
+                    retry_number,
+                    max_retries,
+                )
+                self.sleep_func(self._retry_delay_seconds(retry_number))
+                continue
+
+            return response
+
+        raise AIProviderError("OpenRouter request failed.")
+
+    def _retry_delay_seconds(self, retry_number: int) -> float:
+        base_delay = 2 ** (retry_number - 1)
+        return base_delay + self.jitter_func(0.0, 0.5)
 
     def _build_prompt(self, ticket_context: Mapping[str, Any]) -> str:
         customer_message = str(ticket_context.get("latest_customer_message") or "").strip()

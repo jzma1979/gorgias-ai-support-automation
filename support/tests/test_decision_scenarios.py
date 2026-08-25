@@ -226,6 +226,23 @@ class IncompleteOpenRouterSession:
         return IncompleteOpenRouterResponse()
 
 
+class TransientOpenRouterResponse:
+    status_code = 503
+    content = b"{}"
+
+    def json(self) -> dict[str, Any]:
+        return {"error": {"message": "Provider returned error"}}
+
+
+class RepeatedTransientOpenRouterSession:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def post(self, *args: Any, **kwargs: Any) -> TransientOpenRouterResponse:
+        self.calls += 1
+        return TransientOpenRouterResponse()
+
+
 def test_incomplete_openrouter_structured_json_falls_back_safely() -> None:
     ticket = make_ticket("Could you help me with my order?")
     fake_client = FakeGorgiasClient(ticket)
@@ -241,6 +258,31 @@ def test_incomplete_openrouter_structured_json_falls_back_safely() -> None:
         ai_provider=openrouter_provider,
     ).process("123", {})
 
+    assert result.analysis.confidence == 0.0
+    assert result.analysis.recommended_action == "agent_review"
+    assert fake_client.priority == "normal"
+    assert fake_client.tags == ("AI_REVIEW_REQUIRED", "AI_MEDIUM_RISK")
+
+
+def test_repeated_openrouter_503_falls_back_safely_after_retries() -> None:
+    ticket = make_ticket("Could you help me with my order?")
+    fake_client = FakeGorgiasClient(ticket)
+    session = RepeatedTransientOpenRouterSession()
+    openrouter_provider = OpenRouterProvider(
+        api_key="test-key",
+        model="openrouter/free",
+        timeout_seconds=1,
+        session=session,
+        sleep_func=lambda seconds: None,
+        jitter_func=lambda start, end: 0.0,
+    )
+
+    result = SupportTicketProcessor(
+        gorgias_client=fake_client,
+        ai_provider=openrouter_provider,
+    ).process("123", {})
+
+    assert session.calls == 3
     assert result.analysis.confidence == 0.0
     assert result.analysis.recommended_action == "agent_review"
     assert fake_client.priority == "normal"
