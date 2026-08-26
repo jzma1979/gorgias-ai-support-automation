@@ -23,7 +23,7 @@ from support.services.gorgias import GorgiasAPIError, GorgiasClient
 logger = logging.getLogger(__name__)
 TAG_RE = re.compile(r"<[^>]+>")
 EVENT_MESSAGE_MARKER = "_event_payload_message"
-SUPPORTED_REPLY_LANGUAGES = {"en", "sr", "de", "fr", "ja"}
+SUPPORTED_REPLY_LANGUAGES = {"en", "sr", "de", "fr", "es", "ja"}
 SHIPPING_DELAY_UNSAFE_REPLY_TERMS = (
     "has shipped",
     "have shipped",
@@ -77,6 +77,11 @@ LOCALIZED_GUARDRAIL_REPLIES = {
             "dossier immédiatement, reconnaître le problème de sécurité et suivre la "
             "procédure d'escalade approuvée."
         ),
+        "es": (
+            "No envíe una respuesta automática. Un agente humano debe revisar el caso "
+            "de inmediato, reconocer la preocupación de seguridad y seguir el proceso "
+            "de escalamiento aprobado."
+        ),
         "ja": (
             "自動返信は送信しないでください。担当者が直ちに内容を確認し、安全上の懸念を"
             "受け止めたうえで、承認済みのエスカレーション手順に従う必要があります。"
@@ -98,6 +103,10 @@ LOCALIZED_GUARDRAIL_REPLIES = {
         "fr": (
             "Merci de nous avoir contactés. Je vérifie le statut de préparation de votre "
             "commande et confirmerai la prochaine étape après examen des détails d'expédition."
+        ),
+        "es": (
+            "Gracias por contactarnos. Estoy revisando el estado de preparación de su "
+            "pedido y confirmaré el siguiente paso después de revisar los detalles del envío."
         ),
         "ja": (
             "お問い合わせありがとうございます。ご注文の処理状況を確認し、配送情報を確認した"
@@ -127,6 +136,11 @@ LOCALIZED_GUARDRAIL_REPLIES = {
             "problème et préciser si les étapes de charge et de réinitialisation de "
             "base ont déjà été essayées afin que notre équipe examine le dossier de garantie."
         ),
+        "es": (
+            "Lamento que el producto no funcione como se esperaba. Envíe el número de "
+            "pedido, una foto o video breve del problema e indique si ya probó los pasos "
+            "básicos de carga y reinicio para que nuestro equipo revise el caso de garantía."
+        ),
         "ja": (
             "製品が想定どおりに動作していないとのことで申し訳ありません。保証確認のため、"
             "注文番号、問題が分かる短い写真または動画、基本的な充電やリセットをすでに"
@@ -142,6 +156,12 @@ class ProcessingResult:
     analysis: SupportAnalysis
     decision: SupportDecision
     internal_note: str
+
+
+@dataclass(frozen=True)
+class SuggestedReplies:
+    localized: str
+    english: str
 
 
 class SupportTicketProcessor:
@@ -229,7 +249,7 @@ class SupportTicketProcessor:
 
 
 def build_internal_note(analysis: SupportAnalysis, decision: SupportDecision) -> str:
-    suggested_reply = _safe_suggested_reply(analysis, decision)
+    suggested_replies = _safe_suggested_replies(analysis, decision)
     action_label = {
         "auto_resolve": "Human review required before any customer-facing action.",
         "agent_review": "Human review required.",
@@ -248,8 +268,10 @@ def build_internal_note(analysis: SupportAnalysis, decision: SupportDecision) ->
         f"{analysis.summary}\n\n"
         "Recommended action:\n"
         f"{action_label}\n\n"
-        "Suggested reply:\n"
-        f"{suggested_reply}\n\n"
+        "Suggested reply — customer language:\n"
+        f"{suggested_replies.localized}\n\n"
+        "Suggested reply — English:\n"
+        f"{suggested_replies.english}\n\n"
         "Decision:\n"
         f"{decision.decision_reason}\n"
         "No customer-facing message was sent by this automation.\n\n"
@@ -389,25 +411,31 @@ def _is_agent_or_internal_message(message: Mapping[str, Any]) -> bool:
     return False
 
 
-def _safe_suggested_reply(analysis: SupportAnalysis, decision: SupportDecision) -> str:
-    suggested_reply = analysis.suggested_reply.strip()
+def _safe_suggested_replies(
+    analysis: SupportAnalysis,
+    decision: SupportDecision,
+) -> SuggestedReplies:
+    suggested_localized = analysis.suggested_reply_localized.strip()
+    suggested_english = analysis.suggested_reply_en.strip()
     customer_language = _reply_language(analysis.customer_language)
 
     if "AI_SAFETY" in decision.tags:
-        return _localized_guardrail_reply("safety", customer_language)
-    if "AI_SHIPPING_DELAY" in decision.tags and _requires_localized_guardrail(
-        suggested_reply,
+        return _localized_guardrail_replies("safety", customer_language)
+    if "AI_SHIPPING_DELAY" in decision.tags and _requires_guardrail_pair(
+        suggested_localized,
+        suggested_english,
         customer_language,
         SHIPPING_DELAY_UNSAFE_REPLY_TERMS,
     ):
-        return _localized_guardrail_reply("shipping_delay", customer_language)
-    if "AI_PRODUCT_DEFECT" in decision.tags and _requires_localized_guardrail(
-        suggested_reply,
+        return _localized_guardrail_replies("shipping_delay", customer_language)
+    if "AI_PRODUCT_DEFECT" in decision.tags and _requires_guardrail_pair(
+        suggested_localized,
+        suggested_english,
         customer_language,
         PRODUCT_DEFECT_UNSAFE_REPLY_TERMS,
     ):
-        return _localized_guardrail_reply("product_defect", customer_language)
-    return suggested_reply
+        return _localized_guardrail_replies("product_defect", customer_language)
+    return SuggestedReplies(localized=suggested_localized, english=suggested_english)
 
 
 def _reply_language(customer_language: str) -> str:
@@ -417,9 +445,32 @@ def _reply_language(customer_language: str) -> str:
     return "en"
 
 
-def _localized_guardrail_reply(guardrail: str, customer_language: str) -> str:
+def _localized_guardrail_replies(
+    guardrail: str,
+    customer_language: str,
+) -> SuggestedReplies:
     replies = LOCALIZED_GUARDRAIL_REPLIES[guardrail]
-    return replies.get(customer_language, replies["en"])
+    return SuggestedReplies(
+        localized=replies.get(customer_language, replies["en"]),
+        english=replies["en"],
+    )
+
+
+def _requires_guardrail_pair(
+    suggested_localized: str,
+    suggested_english: str,
+    customer_language: str,
+    unsafe_terms: tuple[str, ...],
+) -> bool:
+    return _requires_localized_guardrail(
+        suggested_localized,
+        customer_language,
+        unsafe_terms,
+    ) or _requires_localized_guardrail(
+        suggested_english,
+        "en",
+        unsafe_terms,
+    )
 
 
 def _requires_localized_guardrail(

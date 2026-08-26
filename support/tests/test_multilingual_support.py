@@ -53,9 +53,11 @@ def analysis_content(
     *,
     customer_language: str,
     summary: str,
-    suggested_reply: str,
+    suggested_reply_localized: str,
+    suggested_reply_en: str | None = None,
     intent: str = "order_status",
 ) -> str:
+    english_reply = suggested_reply_en or suggested_reply_localized
     return json.dumps(
         {
             "customer_language": customer_language,
@@ -65,7 +67,8 @@ def analysis_content(
             "risk": "low",
             "confidence": 0.86,
             "summary": summary,
-            "suggested_reply": suggested_reply,
+            "suggested_reply_localized": suggested_reply_localized,
+            "suggested_reply_en": english_reply,
             "recommended_action": "agent_review",
             "reasoning_summary": "Language and support intent were classified.",
         },
@@ -92,14 +95,16 @@ def test_english_ticket_keeps_summary_and_reply_in_english() -> None:
         '{"customer_language":"en","intent":"order_status","sentiment":"neutral",'
         '"urgency":"low","risk":"low","confidence":0.86,'
         '"summary":"Customer asks for the status of order #1001.",'
-        '"suggested_reply":"Hi, we will check order #1001 and follow up shortly.",'
+        '"suggested_reply_localized":"Hi, we will check order #1001 and follow up shortly.",'
+        '"suggested_reply_en":"Hi, we will check order #1001 and follow up shortly.",'
         '"recommended_action":"agent_review",'
         '"reasoning_summary":"Low-risk order status request."}'
     ).analyze({"latest_customer_message": "Hi, where is order #1001?"})
 
     assert analysis.customer_language == "en"
     assert analysis.summary == "Customer asks for the status of order #1001."
-    assert analysis.suggested_reply.startswith("Hi,")
+    assert analysis.suggested_reply_localized.startswith("Hi,")
+    assert analysis.suggested_reply_en.startswith("Hi,")
 
 
 def test_serbian_ticket_uses_english_summary_and_serbian_suggested_reply() -> None:
@@ -107,14 +112,18 @@ def test_serbian_ticket_uses_english_summary_and_serbian_suggested_reply() -> No
         '{"customer_language":"sr","intent":"order_status","sentiment":"neutral",'
         '"urgency":"low","risk":"low","confidence":0.86,'
         '"summary":"Customer asks for the status of order #1001.",'
-        '"suggested_reply":"Zdravo, provericemo porudzbinu #1001 i javiti vam se uskoro.",'
+        '"suggested_reply_localized":"Zdravo, provericemo porudzbinu #1001 i javiti vam se uskoro.",'
+        '"suggested_reply_en":"Hi, we will check order #1001 and follow up shortly.",'
         '"recommended_action":"agent_review",'
         '"reasoning_summary":"Low-risk order status request."}'
     ).analyze({"latest_customer_message": "Zdravo, moja porudzbina #1001 jos nije stigla."})
 
     assert analysis.customer_language == "sr"
     assert analysis.summary == "Customer asks for the status of order #1001."
-    assert analysis.suggested_reply.startswith("Zdravo")
+    assert analysis.suggested_reply_localized.startswith("Zdravo")
+    assert analysis.suggested_reply_en.startswith("Hi")
+    assert "#1001" in analysis.suggested_reply_localized
+    assert "#1001" in analysis.suggested_reply_en
 
 
 def test_german_ticket_uses_english_summary_and_german_suggested_reply() -> None:
@@ -122,14 +131,18 @@ def test_german_ticket_uses_english_summary_and_german_suggested_reply() -> None
         '{"customer_language":"de","intent":"shipping_delay","sentiment":"negative",'
         '"urgency":"high","risk":"medium","confidence":0.9,'
         '"summary":"Customer reports that order #2002 has not shipped yet.",'
-        '"suggested_reply":"Hallo, wir pruefen Bestellung #2002 und melden uns in Kuerze.",'
+        '"suggested_reply_localized":"Hallo, wir pruefen Bestellung #2002 und melden uns in Kuerze.",'
+        '"suggested_reply_en":"Hello, we will check order #2002 and follow up shortly.",'
         '"recommended_action":"agent_review",'
         '"reasoning_summary":"Shipping-delay review is appropriate."}'
     ).analyze({"latest_customer_message": "Hallo, Bestellung #2002 wurde noch nicht versendet."})
 
     assert analysis.customer_language == "de"
     assert analysis.summary == "Customer reports that order #2002 has not shipped yet."
-    assert analysis.suggested_reply.startswith("Hallo")
+    assert analysis.suggested_reply_localized.startswith("Hallo")
+    assert analysis.suggested_reply_en.startswith("Hello")
+    assert "#2002" in analysis.suggested_reply_localized
+    assert "#2002" in analysis.suggested_reply_en
 
 
 def test_unknown_language_uses_english_suggested_reply() -> None:
@@ -137,14 +150,16 @@ def test_unknown_language_uses_english_suggested_reply() -> None:
         '{"customer_language":"unknown","intent":"other","sentiment":"neutral",'
         '"urgency":"medium","risk":"medium","confidence":0.42,'
         '"summary":"The customer message language is unclear and needs review.",'
-        '"suggested_reply":"Thanks for reaching out. Our team will review this and follow up.",'
+        '"suggested_reply_localized":"Thanks for reaching out. Our team will review this and follow up.",'
+        '"suggested_reply_en":"Thanks for reaching out. Our team will review this and follow up.",'
         '"recommended_action":"agent_review",'
         '"reasoning_summary":"Language is ambiguous, so English fallback is used."}'
     ).analyze({"latest_customer_message": "???"})
 
     assert analysis.customer_language == "unknown"
     assert analysis.summary == "The customer message language is unclear and needs review."
-    assert analysis.suggested_reply.startswith("Thanks")
+    assert analysis.suggested_reply_localized.startswith("Thanks")
+    assert analysis.suggested_reply_en.startswith("Thanks")
 
 
 def test_identifiers_are_preserved_in_analysis_and_internal_note() -> None:
@@ -159,9 +174,13 @@ def test_identifiers_are_preserved_in_analysis_and_internal_note() -> None:
             "Customer asks for tracking on order #1001 for Heatbox, tracking "
             "number TRACK123, URL https://track.example/ABC."
         ),
-        suggested_reply=(
+        suggested_reply_localized=(
             "Zdravo, provericemo porudzbinu #1001 za Heatbox. Tracking broj "
             "TRACK123 i link https://track.example/ABC ostaju nepromenjeni."
+        ),
+        suggested_reply_en=(
+            "Hi, we will check order #1001 for Heatbox. Tracking number TRACK123 "
+            "and link https://track.example/ABC remain unchanged."
         ),
         recommended_action="agent_review",
         reasoning_summary="Identifiers were preserved for agent review.",
@@ -174,6 +193,8 @@ def test_identifiers_are_preserved_in_analysis_and_internal_note() -> None:
     assert "TRACK123" in note
     assert "https://track.example/ABC" in note
     assert "Heatbox" in note
+    assert "Suggested reply — customer language:" in note
+    assert "Suggested reply — English:" in note
 
 
 def test_shipping_delay_preserves_serbian_reply_and_english_internal_fields() -> None:
@@ -185,9 +206,13 @@ def test_shipping_delay_preserves_serbian_reply_and_english_internal_fields() ->
         risk="high",
         confidence=0.92,
         summary="Customer reports the order has not arrived after more than one week.",
-        suggested_reply=(
+        suggested_reply_localized=(
             "Zdravo, proverićemo gde je paket i javiti vam se čim pregledamo "
             "detalje isporuke."
+        ),
+        suggested_reply_en=(
+            "Hi, we will check where the package is and follow up once we review "
+            "the shipping details."
         ),
         recommended_action="agent_review",
         reasoning_summary="Shipping delay should be reviewed by a human agent.",
@@ -208,7 +233,8 @@ def test_shipping_delay_preserves_serbian_reply_and_english_internal_fields() ->
 
     assert "Summary:\nCustomer reports the order has not arrived" in note
     assert "Decision:\nOrder appears unfulfilled" in note
-    assert "Suggested reply:\nZdravo, proverićemo gde je paket" in note
+    assert "Suggested reply — customer language:\nZdravo, proverićemo gde je paket" in note
+    assert "Suggested reply — English:\nHi, we will check where the package is" in note
     assert "Thanks for reaching out" not in note
 
 
@@ -221,7 +247,8 @@ def test_shipping_delay_guardrail_replacement_is_serbian() -> None:
         risk="high",
         confidence=0.92,
         summary="Customer reports the order has not arrived after more than one week.",
-        suggested_reply="Your order has shipped and tracking is available.",
+        suggested_reply_localized="Your order has shipped and tracking is available.",
+        suggested_reply_en="Your order has shipped and tracking is available.",
         recommended_action="agent_review",
         reasoning_summary="Shipping delay should be reviewed by a human agent.",
     )
@@ -241,16 +268,17 @@ def test_shipping_delay_guardrail_replacement_is_serbian() -> None:
 
     assert "Summary:\nCustomer reports the order has not arrived" in note
     assert "Decision:\nOrder appears unfulfilled" in note
-    assert "Suggested reply:\nHvala što ste nam se javili" in note
+    assert "Suggested reply — customer language:\nHvala što ste nam se javili" in note
+    assert "Suggested reply — English:\nThanks for reaching out" in note
     assert "Your order has shipped" not in note
-    assert "Thanks for reaching out" not in note
 
 
 def test_fallback_analysis_uses_unknown_language() -> None:
     analysis = fallback_analysis("AI provider failed.")
 
     assert analysis.customer_language == "unknown"
-    assert analysis.suggested_reply.startswith("Please review")
+    assert analysis.suggested_reply_localized.startswith("Please review")
+    assert analysis.suggested_reply_en.startswith("Please review")
 
 
 def test_serbian_language_regression_uses_customer_message_not_english_context() -> None:
@@ -262,9 +290,13 @@ def test_serbian_language_regression_uses_customer_message_not_english_context()
         analysis_content(
             customer_language="sr",
             summary="Customer says order #1001 has not arrived after more than a week.",
-            suggested_reply=(
+            suggested_reply_localized=(
                 "Zdravo, proverićemo porudžbinu #1001, Heatbox i Canpar Courier "
                 "tracking TRACK123 pa ćemo vam se javiti."
+            ),
+            suggested_reply_en=(
+                "Hi, we will check order #1001, Heatbox, and Canpar Courier "
+                "tracking TRACK123, then follow up."
             ),
         )
     )
@@ -296,11 +328,16 @@ def test_serbian_language_regression_uses_customer_message_not_english_context()
 
     assert analysis.customer_language == "sr"
     assert analysis.summary == "Customer says order #1001 has not arrived after more than a week."
-    assert analysis.suggested_reply.startswith("Zdravo")
-    assert "#1001" in analysis.suggested_reply
-    assert "Heatbox" in analysis.suggested_reply
-    assert "Canpar Courier" in analysis.suggested_reply
-    assert "TRACK123" in analysis.suggested_reply
+    assert analysis.suggested_reply_localized.startswith("Zdravo")
+    assert analysis.suggested_reply_en.startswith("Hi")
+    assert "#1001" in analysis.suggested_reply_localized
+    assert "#1001" in analysis.suggested_reply_en
+    assert "Heatbox" in analysis.suggested_reply_localized
+    assert "Heatbox" in analysis.suggested_reply_en
+    assert "Canpar Courier" in analysis.suggested_reply_localized
+    assert "Canpar Courier" in analysis.suggested_reply_en
+    assert "TRACK123" in analysis.suggested_reply_localized
+    assert "TRACK123" in analysis.suggested_reply_en
     assert customer_message in language_source_section(prompt)
     assert "Order #1001" in business_context_section(prompt)
     assert "Heatbox" in business_context_section(prompt)
@@ -314,7 +351,10 @@ def test_german_message_with_english_shopify_context_detects_de() -> None:
         analysis_content(
             customer_language="de",
             summary="Customer says order #2002 has not arrived yet.",
-            suggested_reply="Hallo, wir prüfen Bestellung #2002 und melden uns in Kürze.",
+            suggested_reply_localized=(
+                "Hallo, wir prüfen Bestellung #2002 und melden uns in Kürze."
+            ),
+            suggested_reply_en="Hello, we will check order #2002 and follow up shortly.",
         )
     )
 
@@ -327,8 +367,10 @@ def test_german_message_with_english_shopify_context_detects_de() -> None:
 
     assert analysis.customer_language == "de"
     assert analysis.summary == "Customer says order #2002 has not arrived yet."
-    assert analysis.suggested_reply.startswith("Hallo")
-    assert "#2002" in analysis.suggested_reply
+    assert analysis.suggested_reply_localized.startswith("Hallo")
+    assert analysis.suggested_reply_en.startswith("Hello")
+    assert "#2002" in analysis.suggested_reply_localized
+    assert "#2002" in analysis.suggested_reply_en
 
 
 def test_french_message_with_english_context_detects_fr() -> None:
@@ -337,7 +379,8 @@ def test_french_message_with_english_context_detects_fr() -> None:
         analysis_content(
             customer_language="fr",
             summary="Customer says order #3003 still has not arrived.",
-            suggested_reply="Bonjour, nous allons vérifier la commande #3003.",
+            suggested_reply_localized="Bonjour, nous allons vérifier la commande #3003.",
+            suggested_reply_en="Hello, we will check order #3003.",
         )
     )
 
@@ -350,8 +393,36 @@ def test_french_message_with_english_context_detects_fr() -> None:
 
     assert analysis.customer_language == "fr"
     assert analysis.summary == "Customer says order #3003 still has not arrived."
-    assert analysis.suggested_reply.startswith("Bonjour")
-    assert "#3003" in analysis.suggested_reply
+    assert analysis.suggested_reply_localized.startswith("Bonjour")
+    assert analysis.suggested_reply_en.startswith("Hello")
+    assert "#3003" in analysis.suggested_reply_localized
+    assert "#3003" in analysis.suggested_reply_en
+
+
+def test_spanish_message_with_english_context_detects_es() -> None:
+    customer_message = "Hola, mi pedido #6006 todavía no ha llegado."
+    provider = make_provider(
+        analysis_content(
+            customer_language="es",
+            summary="Customer says order #6006 has not arrived yet.",
+            suggested_reply_localized="Hola, revisaremos el pedido #6006 y le responderemos pronto.",
+            suggested_reply_en="Hello, we will check order #6006 and follow up shortly.",
+        )
+    )
+
+    analysis = provider.analyze(
+        {
+            "latest_customer_message": customer_message,
+            "ticket": {"order": {"name": "Order #6006", "product_name": "Heatbox"}},
+        }
+    )
+
+    assert analysis.customer_language == "es"
+    assert analysis.summary == "Customer says order #6006 has not arrived yet."
+    assert analysis.suggested_reply_localized.startswith("Hola")
+    assert analysis.suggested_reply_en.startswith("Hello")
+    assert "#6006" in analysis.suggested_reply_localized
+    assert "#6006" in analysis.suggested_reply_en
 
 
 def test_japanese_message_with_english_context_detects_ja() -> None:
@@ -360,7 +431,8 @@ def test_japanese_message_with_english_context_detects_ja() -> None:
         analysis_content(
             customer_language="ja",
             summary="Customer says order #4004 has not arrived yet.",
-            suggested_reply="こんにちは、注文 #4004 を確認して折り返しご連絡します。",
+            suggested_reply_localized="こんにちは、注文 #4004 を確認して折り返しご連絡します。",
+            suggested_reply_en="Hello, we will check order #4004 and follow up.",
         )
     )
 
@@ -373,8 +445,10 @@ def test_japanese_message_with_english_context_detects_ja() -> None:
 
     assert analysis.customer_language == "ja"
     assert analysis.summary == "Customer says order #4004 has not arrived yet."
-    assert analysis.suggested_reply.startswith("こんにちは")
-    assert "#4004" in analysis.suggested_reply
+    assert analysis.suggested_reply_localized.startswith("こんにちは")
+    assert analysis.suggested_reply_en.startswith("Hello")
+    assert "#4004" in analysis.suggested_reply_localized
+    assert "#4004" in analysis.suggested_reply_en
 
 
 def test_english_message_with_english_context_detects_en() -> None:
@@ -383,7 +457,8 @@ def test_english_message_with_english_context_detects_en() -> None:
         analysis_content(
             customer_language="en",
             summary="Customer asks where order #5005 is.",
-            suggested_reply="Hi, we will check order #5005 and follow up shortly.",
+            suggested_reply_localized="Hi, we will check order #5005 and follow up shortly.",
+            suggested_reply_en="Hi, we will check order #5005 and follow up shortly.",
         )
     )
 
@@ -396,8 +471,11 @@ def test_english_message_with_english_context_detects_en() -> None:
 
     assert analysis.customer_language == "en"
     assert analysis.summary == "Customer asks where order #5005 is."
-    assert analysis.suggested_reply.startswith("Hi")
-    assert "#5005" in analysis.suggested_reply
+    assert analysis.suggested_reply_localized.startswith("Hi")
+    assert analysis.suggested_reply_en.startswith("Hi")
+    assert analysis.suggested_reply_localized == analysis.suggested_reply_en
+    assert "#5005" in analysis.suggested_reply_localized
+    assert "#5005" in analysis.suggested_reply_en
 
 
 def test_latest_inbound_customer_message_is_selected_by_timestamp() -> None:

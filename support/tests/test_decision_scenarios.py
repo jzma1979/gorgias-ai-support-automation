@@ -51,6 +51,10 @@ class FakeGorgiasClient:
 
 
 def make_analysis(**overrides: Any) -> SupportAnalysis:
+    suggested_reply = overrides.pop(
+        "suggested_reply",
+        "Thanks for reaching out. We will review this and follow up.",
+    )
     data = {
         "customer_language": "en",
         "intent": "other",
@@ -59,7 +63,8 @@ def make_analysis(**overrides: Any) -> SupportAnalysis:
         "risk": "medium",
         "confidence": 0.88,
         "summary": "Customer needs help.",
-        "suggested_reply": "Thanks for reaching out. We will review this and follow up.",
+        "suggested_reply_localized": suggested_reply,
+        "suggested_reply_en": suggested_reply,
         "recommended_action": "agent_review",
         "reasoning_summary": "Human review is appropriate.",
     }

@@ -29,9 +29,14 @@ class SupportAnalysis(BaseModel):
     risk: Risk
     confidence: float = Field(ge=0.0, le=1.0)
     summary: str = Field(min_length=1, max_length=1200)
-    suggested_reply: str = Field(min_length=1, max_length=4000)
+    suggested_reply_localized: str = Field(min_length=1, max_length=4000)
+    suggested_reply_en: str = Field(min_length=1, max_length=4000)
     recommended_action: RecommendedAction
     reasoning_summary: str = Field(min_length=1, max_length=1200)
+
+    @property
+    def suggested_reply(self) -> str:
+        return self.suggested_reply_localized
 
     @field_validator("customer_language", mode="before")
     @classmethod
@@ -43,7 +48,13 @@ class SupportAnalysis(BaseModel):
             raise ValueError("customer_language must not be blank")
         return text
 
-    @field_validator("summary", "suggested_reply", "reasoning_summary", mode="before")
+    @field_validator(
+        "summary",
+        "suggested_reply_localized",
+        "suggested_reply_en",
+        "reasoning_summary",
+        mode="before",
+    )
     @classmethod
     def require_non_empty_text(cls, value: object) -> str:
         if value is None:
@@ -64,7 +75,11 @@ def fallback_analysis(reason: str) -> SupportAnalysis:
         risk="medium",
         confidence=0.0,
         summary="AI analysis could not be completed reliably.",
-        suggested_reply=(
+        suggested_reply_localized=(
+            "Please review the ticket context and respond manually. "
+            "The automation could not produce a validated suggestion."
+        ),
+        suggested_reply_en=(
             "Please review the ticket context and respond manually. "
             "The automation could not produce a validated suggestion."
         ),

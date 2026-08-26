@@ -88,9 +88,13 @@ class OpenRouterProvider:
                         "Detect the customer's original message language and set "
                         "customer_language to an ISO 639-1 code when possible, or "
                         "'unknown' when uncertain. Always write summary in English "
-                        "for internal agent review. Always write suggested_reply in "
-                        "the customer's original language; use English if "
-                        "customer_language is unknown. Do not translate or alter "
+                        "for internal agent review. Always write "
+                        "suggested_reply_localized in the customer's original "
+                        "language; use English if customer_language is unknown. "
+                        "Always write suggested_reply_en as the equivalent English "
+                        "version of the same customer reply. Both reply fields must "
+                        "communicate the same facts, promises, and limitations. Do "
+                        "not translate or alter "
                         "customer names, product names, SKUs, order IDs, tracking "
                         "numbers, URLs, coupon codes, or other identifiers. Do not "
                         "invent order, shipping, refund, delivery, policy, or promise "
@@ -194,9 +198,13 @@ class OpenRouterProvider:
             "risk": "low | medium | high | critical",
             "confidence": "number between 0 and 1",
             "summary": "brief customer issue summary, always in English",
-            "suggested_reply": (
-                "draft reply for a human agent to review, written in the customer's "
-                "original language unless customer_language is unknown"
+            "suggested_reply_localized": (
+                "draft reply for a human agent to review, written in the detected "
+                "customer_language unless customer_language is unknown"
+            ),
+            "suggested_reply_en": (
+                "English version of suggested_reply_localized with the same facts, "
+                "promises, limitations, and identifiers"
             ),
             "recommended_action": "auto_resolve | agent_review | escalate",
             "reasoning_summary": "short operational explanation only",

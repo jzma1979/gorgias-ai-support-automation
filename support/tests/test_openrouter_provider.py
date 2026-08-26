@@ -40,7 +40,8 @@ def valid_analysis_payload() -> dict:
                         '"sentiment":"neutral",'
                         '"urgency":"low","risk":"low","confidence":0.91,'
                         '"summary":"Customer asks for tracking.",'
-                        '"suggested_reply":"Thanks, we will check the tracking.",'
+                        '"suggested_reply_localized":"Thanks, we will check the tracking.",'
+                        '"suggested_reply_en":"Thanks, we will check the tracking.",'
                         '"recommended_action":"agent_review",'
                         '"reasoning_summary":"Low-risk order status request."}'
                     ),
@@ -144,6 +145,10 @@ def test_openrouter_requests_strict_json_schema_response_format() -> None:
     assert response_format["json_schema"]["name"] == "support_analysis"
     assert response_format["json_schema"]["strict"] is True
     assert response_format["json_schema"]["schema"] == SupportAnalysis.model_json_schema()
+    schema_properties = response_format["json_schema"]["schema"]["properties"]
+    assert "suggested_reply_localized" in schema_properties
+    assert "suggested_reply_en" in schema_properties
+    assert "suggested_reply" not in schema_properties
     assert request_json["provider"]["require_parameters"] is True
 
 
@@ -161,7 +166,9 @@ def test_openrouter_prompt_instructs_multilingual_output() -> None:
     system_prompt = session.calls[0]["kwargs"]["json"]["messages"][0]["content"]
     assert "customer_language" in system_prompt
     assert "Always write summary in English" in system_prompt
-    assert "Always write suggested_reply in" in system_prompt
+    assert "suggested_reply_localized" in system_prompt
+    assert "suggested_reply_en" in system_prompt
+    assert "same facts, promises, and limitations" in system_prompt
     assert "Do not translate or alter" in system_prompt
     assert "order IDs" in system_prompt
     assert "tracking numbers" in system_prompt
@@ -213,7 +220,8 @@ def test_openrouter_validation_error_names_failed_fields_only() -> None:
         message = str(exc)
         assert "Failed fields:" in message
         assert "sentiment" in message
-        assert "suggested_reply" in message
+        assert "suggested_reply_localized" in message
+        assert "suggested_reply_en" in message
         assert "customer@example.com" not in message
         assert "test-secret-key" not in message
         assert len(session.calls) == 1
