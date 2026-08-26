@@ -51,7 +51,7 @@ class OpenRouterProvider:
         self.model = model
         self.base_url = (base_url or settings.OPENROUTER_BASE_URL).rstrip("/")
         self.timeout_seconds = (
-            timeout_seconds or settings.EXTERNAL_REQUEST_TIMEOUT_SECONDS
+            timeout_seconds or settings.OPENROUTER_REQUEST_TIMEOUT_SECONDS
         )
         self.session = session or requests.Session()
         self.sleep_func = sleep_func or time.sleep
@@ -63,7 +63,7 @@ class OpenRouterProvider:
             api_key=settings.OPENROUTER_API_KEY,
             model=settings.OPENROUTER_MODEL,
             base_url=settings.OPENROUTER_BASE_URL,
-            timeout_seconds=settings.EXTERNAL_REQUEST_TIMEOUT_SECONDS,
+            timeout_seconds=settings.OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
 
     def analyze(self, ticket_context: Mapping[str, Any]) -> SupportAnalysis:
@@ -153,6 +153,16 @@ class OpenRouterProvider:
                     timeout=self.timeout_seconds,
                 )
             except requests.Timeout as exc:
+                if attempt < MAX_OPENROUTER_ATTEMPTS:
+                    retry_number = attempt
+                    max_retries = MAX_OPENROUTER_ATTEMPTS - 1
+                    logger.warning(
+                        "OpenRouter request timed out, retry %s/%s",
+                        retry_number,
+                        max_retries,
+                    )
+                    self.sleep_func(self._retry_delay_seconds(retry_number))
+                    continue
                 raise AIProviderError("OpenRouter request timed out.") from exc
             except requests.RequestException as exc:
                 raise AIProviderError("OpenRouter request failed.") from exc

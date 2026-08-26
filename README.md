@@ -105,7 +105,8 @@ Create a local `.env` from `.env.example`. Never commit `.env`.
 | `AI_PROVIDER` | Currently only `openrouter` |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
 | `OPENROUTER_MODEL` | Recommended: `openrouter/free`; explicit free variants containing `:free` are also allowed |
-| `EXTERNAL_REQUEST_TIMEOUT_SECONDS` | Timeout for Gorgias and AI HTTP calls |
+| `OPENROUTER_REQUEST_TIMEOUT_SECONDS` | OpenRouter HTTP timeout; defaults to `30` seconds |
+| `EXTERNAL_REQUEST_TIMEOUT_SECONDS` | Timeout for Gorgias HTTP calls |
 | `WEBHOOK_IDEMPOTENCY_TTL_SECONDS` | Duplicate webhook suppression window |
 | `INTEGRATION_NAME` | Used for loop-prevention checks |
 | `GORGIAS_INTEGRATION_EMAIL` | Optional integration sender email |

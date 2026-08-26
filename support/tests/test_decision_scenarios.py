@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import requests
+
 from support.schemas import SupportAnalysis
 from support.services.ai.base import AIProviderError
 from support.services.ai.openrouter import OpenRouterProvider
@@ -248,6 +250,15 @@ class RepeatedTransientOpenRouterSession:
         return TransientOpenRouterResponse()
 
 
+class RepeatedTimeoutOpenRouterSession:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def post(self, *args: Any, **kwargs: Any) -> None:
+        self.calls += 1
+        raise requests.Timeout("read timed out")
+
+
 def test_incomplete_openrouter_structured_json_falls_back_safely() -> None:
     ticket = make_ticket("Could you help me with my order?")
     fake_client = FakeGorgiasClient(ticket)
@@ -263,6 +274,31 @@ def test_incomplete_openrouter_structured_json_falls_back_safely() -> None:
         ai_provider=openrouter_provider,
     ).process("123", {})
 
+    assert result.analysis.confidence == 0.0
+    assert result.analysis.recommended_action == "agent_review"
+    assert fake_client.priority == "normal"
+    assert fake_client.tags == ("AI_REVIEW_REQUIRED", "AI_MEDIUM_RISK")
+
+
+def test_repeated_openrouter_timeout_falls_back_safely_after_retries() -> None:
+    ticket = make_ticket("Could you help me with my order?")
+    fake_client = FakeGorgiasClient(ticket)
+    session = RepeatedTimeoutOpenRouterSession()
+    openrouter_provider = OpenRouterProvider(
+        api_key="test-key",
+        model="openrouter/free",
+        timeout_seconds=30,
+        session=session,
+        sleep_func=lambda seconds: None,
+        jitter_func=lambda start, end: 0.0,
+    )
+
+    result = SupportTicketProcessor(
+        gorgias_client=fake_client,
+        ai_provider=openrouter_provider,
+    ).process("123", {})
+
+    assert session.calls == 3
     assert result.analysis.confidence == 0.0
     assert result.analysis.recommended_action == "agent_review"
     assert fake_client.priority == "normal"

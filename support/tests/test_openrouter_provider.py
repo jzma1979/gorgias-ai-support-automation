@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import logging
 
+import requests
+from django.test import override_settings
+
 from support.schemas import SupportAnalysis
 from support.services.ai.base import AIProviderError
 from support.services.ai.openrouter import OpenRouterProvider
@@ -19,7 +22,7 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, *responses: FakeResponse):
+    def __init__(self, *responses: FakeResponse | Exception):
         self.responses = list(responses)
         self.calls = []
 
@@ -27,7 +30,10 @@ class FakeSession:
         self.calls.append({"args": args, "kwargs": kwargs})
         if not self.responses:
             raise AssertionError("No fake OpenRouter response queued.")
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def valid_analysis_payload() -> dict:
@@ -125,6 +131,21 @@ def test_openrouter_calls_chat_completions_endpoint() -> None:
     provider.analyze({"latest_customer_message": "Where is my order?"})
 
     assert session.calls[0]["args"][0] == "https://openrouter.ai/api/v1/chat/completions"
+
+
+@override_settings(OPENROUTER_REQUEST_TIMEOUT_SECONDS=30.0)
+def test_openrouter_default_timeout_is_30_seconds() -> None:
+    session = FakeSession(FakeResponse(valid_analysis_payload()))
+    provider = OpenRouterProvider(
+        api_key="test-key",
+        model="openrouter/free",
+        session=session,
+    )
+
+    provider.analyze({"latest_customer_message": "Where is my order?"})
+
+    assert provider.timeout_seconds == 30.0
+    assert session.calls[0]["kwargs"]["timeout"] == 30.0
 
 
 def test_openrouter_requests_strict_json_schema_response_format() -> None:
@@ -328,6 +349,55 @@ def test_openrouter_429_retries_until_success() -> None:
     assert analysis.intent == "order_status"
     assert len(session.calls) == 3
     assert sleeps == [1.25, 2.25]
+
+
+def test_openrouter_timeout_then_200_succeeds(caplog) -> None:
+    sleeps = []
+    caplog.set_level(logging.WARNING)
+    session = FakeSession(
+        requests.Timeout("read timed out"),
+        FakeResponse(valid_analysis_payload()),
+    )
+    provider = OpenRouterProvider(
+        api_key="test-secret-key",
+        model="openrouter/free",
+        timeout_seconds=30,
+        session=session,
+        sleep_func=sleeps.append,
+        jitter_func=lambda start, end: 0.0,
+    )
+
+    analysis = provider.analyze({"latest_customer_message": "Where is my order?"})
+
+    assert analysis.intent == "order_status"
+    assert len(session.calls) == 2
+    assert sleeps == [1.0]
+    assert "OpenRouter request timed out, retry 1/2" in caplog.text
+    assert "test-secret-key" not in caplog.text
+    assert "Authorization" not in caplog.text
+
+
+def test_openrouter_timeout_twice_then_200_succeeds() -> None:
+    sleeps = []
+    session = FakeSession(
+        requests.Timeout("read timed out"),
+        requests.Timeout("read timed out"),
+        FakeResponse(valid_analysis_payload()),
+    )
+    provider = OpenRouterProvider(
+        api_key="test-key",
+        model="openrouter/free",
+        timeout_seconds=30,
+        session=session,
+        sleep_func=sleeps.append,
+        jitter_func=lambda start, end: 0.0,
+    )
+
+    analysis = provider.analyze({"latest_customer_message": "Where is my order?"})
+
+    assert analysis.customer_language == "en"
+    assert len(session.calls) == 3
+    assert sleeps == [1.0, 2.0]
 
 
 def test_openrouter_repeated_503_raises_after_three_attempts() -> None:
